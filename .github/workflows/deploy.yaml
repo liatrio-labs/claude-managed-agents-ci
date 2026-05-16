@@ -33,7 +33,7 @@ on:
 permissions:
   contents: write # commit returned platform IDs back
   deployments: write
-  id-token: write # Anthropic Workload Identity Federation (vars.SECRET_PROVIDER=anthropic-wif)
+  id-token: write # Anthropic Workload Identity Federation
 
 concurrency:
   group: deploy-${{ github.event.inputs.environment || 'staging' }}-${{ github.event.inputs.agent || 'all' }}
@@ -62,22 +62,15 @@ jobs:
           # consumers without a PAT still get a coherent failure mode.
           token: ${{ secrets.PIPELINE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
 
-      # Anthropic credential provisioning. Set vars.SECRET_PROVIDER to
-      # `anthropic-wif` for keyless OIDC federation, or leave it unset to
-      # fall back to GitHub Secrets. See docs/credentials.md for AWS /
-      # Vault / Azure / 1Password / LastPass paths.
+      # Anthropic credential provisioning via Workload Identity Federation.
+      # vars.ANTHROPIC_* must be configured per GitHub Environment so each
+      # env targets the right Anthropic workspace.
       - uses: ./.github/actions/claude-managed-agents-pipeline
         with:
-          secret-provider: ${{ vars.SECRET_PROVIDER || 'github' }}
-          # WIF inputs (used when secret-provider=anthropic-wif). Both
-          # vars.ANTHROPIC_FEDERATION_RULE_ID and vars.ANTHROPIC_*_ID
-          # should be configured per environment in repo settings.
           anthropic-organization-id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic-service-account-id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           anthropic-federation-rule-id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          # GitHub Secrets fallback (used when secret-provider=github).
-          github-secrets-json: '{"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}'
 
       - name: Sync agent + environment
         run: pnpm agents:deploy

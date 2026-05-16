@@ -24,7 +24,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write # Anthropic WIF (vars.SECRET_PROVIDER=anthropic-wif)
+  id-token: write # Anthropic Workload Identity Federation
 
 concurrency:
   group: cleanup-${{ github.event.inputs.environment }}
@@ -41,12 +41,10 @@ jobs:
 
       - uses: ./.github/actions/claude-managed-agents-pipeline
         with:
-          secret-provider: ${{ vars.SECRET_PROVIDER || 'github' }}
           anthropic-organization-id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic-service-account-id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           anthropic-federation-rule-id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          github-secrets-json: '{"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}'
 
       - name: Run cleanup
         env:

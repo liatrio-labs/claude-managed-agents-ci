@@ -2,9 +2,9 @@
 
 > Validated against the Anthropic Admin API docs at [platform.claude.com](https://platform.claude.com/docs/en/api/admin-api/workspaces) (2026 spec). Field names below are quoted from the documented schemas.
 
-A **Workspace** at [platform.claude.com](https://platform.claude.com) is a unit of resource scoping inside your Anthropic organization. Every API key belongs to exactly one workspace; every Managed Agent, Environment, Session, and Vault you create lives in the workspace of the API key that created it. This is the single most important fact for operating this pipeline correctly: **the `ANTHROPIC_API_KEY` you provision into a CI job determines which workspace receives the agent.**
+A **Workspace** at [platform.claude.com](https://platform.claude.com) is a unit of resource scoping inside your Anthropic organization. Every credential is scoped to exactly one workspace; every Managed Agent, Environment, Session, and Vault you create lives in the workspace of the token that created it. This is the single most important fact for operating this pipeline correctly: **the WIF token your CI job mints determines which workspace receives the agent.**
 
-If you're running this pipeline against more than one environment (staging vs production, or per-team workspaces), you need a separate workspace per environment, with a separate API key per workspace, wired through your [secret provider](credentials.md) under the right GitHub Environment.
+If you're running this pipeline against more than one environment (staging vs production, or per-team workspaces), you need a separate workspace per environment, with a separate Workload Identity Federation rule per workspace, wired to the right GitHub Environment via env-scoped `vars.ANTHROPIC_FEDERATION_RULE_ID` and `vars.ANTHROPIC_WORKSPACE_ID`. See [docs/credentials.md](credentials.md).
 
 ## The objects
 
@@ -64,18 +64,18 @@ The exact action matrix per role is the platform's call — confirm the current 
 
 Two things this pipeline cares about:
 
-1. **Where agents are created.** When `scripts/deploy.ts` runs `POST /v1/agents` or `POST /v1/environments`, those resources land in the workspace of the `ANTHROPIC_API_KEY` it was given. So:
+1. **Where agents are created.** When `scripts/deploy.ts` runs `POST /v1/agents` or `POST /v1/environments`, those resources land in the workspace targeted by the WIF token. So:
 
    ```
-   GitHub Environment "staging"  → SECRET_PROVIDER provisions ANTHROPIC_API_KEY (staging-workspace)
-                                 → deploy.ts creates agent in:  Staging Workspace
-   GitHub Environment "production" → SECRET_PROVIDER provisions ANTHROPIC_API_KEY (prod-workspace)
-                                   → deploy.ts creates agent in: Production Workspace
+   GitHub Environment "staging"  → ANTHROPIC_FEDERATION_RULE_ID (staging rule) → Staging Workspace
+                                 → deploy.ts creates agent in:                   Staging Workspace
+   GitHub Environment "production" → ANTHROPIC_FEDERATION_RULE_ID (prod rule)  → Production Workspace
+                                   → deploy.ts creates agent in:                  Production Workspace
    ```
 
-2. **Where eval traffic goes.** `scripts/run-evals.ts --mode=session` and `scripts/prompt-injection-test.ts --mode=session` create sessions against `platform.managed_agent_id`. That ID is opaque, but the API key used must be a key in **the same workspace as that agent**, otherwise the call will fail. The pipeline writes the agent ID back to `agent.yaml` after deploy — anyone running session-mode evals against that ID needs a key in the matching workspace.
+2. **Where eval traffic goes.** `scripts/run-evals.ts --mode=session` and `scripts/prompt-injection-test.ts --mode=session` create sessions against `platform.managed_agent_id`. That ID is opaque, but the token used must be scoped to **the same workspace as that agent**, otherwise the call will fail. The pipeline writes the agent ID back to `agent.yaml` after deploy — anyone running session-mode evals against that ID needs a token for the matching workspace.
 
-The composite [`claude-managed-agents-pipeline` action](../.github/actions/claude-managed-agents-pipeline/action.yaml) doesn't _enforce_ this — it just exports whatever `ANTHROPIC_API_KEY` your secret provider returns. You're responsible for provisioning the right key for the right environment.
+The composite [`claude-managed-agents-pipeline` action](../.github/actions/claude-managed-agents-pipeline/action.yaml) doesn't _enforce_ this — it exchanges the GitHub OIDC token for whatever workspace the env-scoped `ANTHROPIC_FEDERATION_RULE_ID` points at. You're responsible for wiring the right rule to the right GitHub Environment.
 
 ## Recommended layout
 
@@ -87,16 +87,16 @@ For a real production setup we recommend three workspaces per project:
 | `<project>-staging` | CI deploys land here on `main`; session-mode smoke evals run here. | CI, platform team.                    |
 | `<project>-prod`    | Real user traffic. Required-reviewer environment in GitHub.        | CI (with approval), on-call, billing. |
 
-Mint **one API key per workspace** with `name` matching the workspace (`<project>-staging-ci`, etc.), record it in your secret provider, and configure the matching GitHub Environment to fetch it. Because the deploy workflow binds to a GitHub Environment (`environment: ${{ github.event.inputs.environment || 'staging' }}` in `deploy.yaml`), `secrets.ANTHROPIC_API_KEY` resolves per-environment automatically — staging runs see the staging-workspace key, production runs see the production-workspace key. The provider-specific repo `vars.*` (e.g. `vars.AWS_SECRET_ID` for the AWS path) can also be scoped per-environment if the rest of the secret-fetch wiring needs it.
+Create **one Workload Identity Federation rule per workspace** (`gha-staging`, `gha-prod`, etc.) targeting a shared service account, and wire each rule to the matching GitHub Environment via env-scoped `vars.ANTHROPIC_FEDERATION_RULE_ID` and `vars.ANTHROPIC_WORKSPACE_ID`. Because the deploy workflow binds to a GitHub Environment (`environment: ${{ github.event.inputs.environment || 'staging' }}` in `deploy.yaml`), those vars resolve per-environment automatically — staging runs mint a token for the staging workspace, production runs mint a token for the production workspace.
 
 ## Two kinds of API keys
 
-|                            | Regular API key                                                                                   | Admin API key                                                           |
-| -------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| **Header**                 | `x-api-key: sk-ant-…`                                                                             | `X-Api-Key: $ANTHROPIC_ADMIN_API_KEY`                                   |
-| **Used for**               | Messages API, Managed Agents API (`/v1/agents`, `/v1/sessions`, `/v1/environments`, `/v1/vaults`) | Admin API (`/v1/organizations/...`) — workspace, member, key management |
-| **Scope**                  | One workspace                                                                                     | Org-wide                                                                |
-| **Used by this pipeline?** | Yes — every `claude-managed-agents-pipeline` job provisions one as `ANTHROPIC_API_KEY`            | No (this pipeline does not auto-create workspaces or members)           |
+|                            | WIF access token                                                                                                       | Admin API key                                                           |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| **Header**                 | `Authorization: Bearer sk-ant-oat01-…`                                                                                 | `X-Api-Key: $ANTHROPIC_ADMIN_API_KEY`                                   |
+| **Used for**               | Messages API, Managed Agents API (`/v1/agents`, `/v1/sessions`, `/v1/environments`, `/v1/vaults`)                      | Admin API (`/v1/organizations/...`) — workspace, member, key management |
+| **Scope**                  | One workspace; expires within minutes                                                                                  | Org-wide                                                                |
+| **Used by this pipeline?** | Yes — every `claude-managed-agents-pipeline` job mints one via Workload Identity Federation as `ANTHROPIC_AUTH_TOKEN`  | No (this pipeline does not auto-create workspaces or members)           |
 
 This pipeline does **not** require an admin key. If you want to script workspace and member creation, that's a separate one-time chore against the admin API; we recommend doing it in Terraform / OpenTofu rather than in CI so the org-level state has a clear reviewer.
 
@@ -132,6 +132,6 @@ All of the above are intentional: they're org-level state changes that should pa
 ## Sanity checklist when something looks off
 
 - ❓ "Deploy succeeded but I don't see the agent in the console." → You're looking at the wrong workspace. Check the console's workspace switcher; cross-reference the API key's `workspace_id`.
-- ❓ "Session-mode eval fails with 404 on the agent ID." → The CI job is using a key from a different workspace than the one the agent lives in. Re-check `SECRET_PROVIDER` wiring for that GitHub Environment.
-- ❓ "PRs land agents in the wrong workspace." → Your default `SECRET_PROVIDER` value is wrong, or a workflow is missing the per-environment override. The deploy workflow scopes secrets to GitHub Environments — make sure `staging` and `production` both have their own variable set.
+- ❓ "Session-mode eval fails with 404 on the agent ID." → The CI job is using a token scoped to a different workspace than the one the agent lives in. Re-check `vars.ANTHROPIC_FEDERATION_RULE_ID` and `vars.ANTHROPIC_WORKSPACE_ID` on that GitHub Environment.
+- ❓ "PRs land agents in the wrong workspace." → A workflow is missing the env-scoped `ANTHROPIC_FEDERATION_RULE_ID` / `ANTHROPIC_WORKSPACE_ID` override, or both environments share the same rule. Make sure `staging` and `production` GitHub Environments each have their own values.
 - ❓ "Quota error after a noisy day." → Rate / spend limits are org-wide. Check the console for org-level usage; consider per-workspace caps.
