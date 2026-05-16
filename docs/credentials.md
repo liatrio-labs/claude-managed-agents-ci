@@ -8,6 +8,8 @@ The pipeline authenticates to Anthropic using **Workload Identity Federation (WI
 
 ## One-time setup in the Anthropic Console
 
+> **Shortcut:** [`scripts/bootstrap.sh`](../scripts/bootstrap.sh) does steps 1–3 below via the Anthropic Admin API in one run. It prompts for an Admin API key (read silently, never stored), discovers existing workspaces, then creates / reuses the service account, OIDC issuer, and federation rules idempotently. It also prints the matching `gh variable set` commands at the end and offers to run them for you. Use it if you'd rather not click through the Console UI.
+
 1. **Service account** — Settings → Service accounts → Create. Name it after your CI workload (e.g. `liatrio-labs-ci-workflows`). Add it to each Workspace it will operate in (staging, production) under that workspace's Members tab.
 
 2. **Federation issuer** — Settings → Workload identity → Issuers → Create.
