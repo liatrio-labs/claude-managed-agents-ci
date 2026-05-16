@@ -35,7 +35,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
     "yaml": "^2.9.0",
-    "zod": "^3.23.8"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
