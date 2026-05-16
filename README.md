@@ -8,7 +8,7 @@ Production-grade GitHub Actions pipeline for repositories that ship [Claude Mana
 
 - Single-file YAML source of truth — [`agent.yaml`](agents/example-agent/agent.yaml) is `model`, `tools`, `mcp_servers`, `skills`, `system` (inline or `system_path`), `environment` (cloud sandbox: packages + networking), and CI knobs in one place
 - [JSON Schema](schema/agent.schema.json) validation — typo + shape errors caught locally before any CI run
-- Per-deploy-environment platform IDs (`platform.staging.*`, `platform.production.*`) auto-tracked and committed back
+- Per-deploy-environment platform IDs (`platform.staging.*`, `platform.production.*`) printed in the deploy job's step summary after each run; copy back into `agent.yaml` manually
 
 **PR review (every change)**
 
@@ -322,21 +322,21 @@ ANTHROPIC_API_KEY=... DEPLOY_ENV=staging pnpm agents:cleanup --apply            
 
 `scripts/deploy.ts` is idempotent and version-aware:
 
-- First run for an agent → `POST /v1/agents` + `POST /v1/environments`, write IDs back to `agent.yaml`.
-- Subsequent runs → `GET /v1/agents/{id}` for current version, `POST /v1/agents/{id}` with that version + the desired fields. The API auto-bumps the version, or returns the same version unchanged on a no-op.
+- First run for an agent → `POST /v1/agents` + `POST /v1/environments`. The IDs are written to the runner's working copy of `agent.yaml` and printed in the deploy job's **step summary**. Copy them into `agents/<id>/agent.yaml` under `platform.<env>.*` in a follow-up PR.
+- Subsequent runs (after the IDs are populated) → `GET /v1/agents/{id}` for current version, `POST /v1/agents/{id}` with that version + the desired fields. The API auto-bumps the version, or returns the same version unchanged on a no-op.
 - `ROLLBACK_TO_VERSION=<N>` (or `previous`) → fetches version N's snapshot and re-applies it as a new update; produces a fresh version that mirrors N. Versions are append-only.
 
 Triggered by:
 
-- Push to `main` → staging sync + session-mode smoke evals + commit IDs back. Staging smoke evals are `continue-on-error` since the resources are already created in the workspace by the time evals run; production keeps the gate and auto-rolls-back on smoke-eval failure.
+- Push to `main` → staging sync + session-mode smoke evals + print IDs in the step summary. Staging smoke evals are `continue-on-error` since the resources are already created in the workspace by the time evals run; production keeps the gate and auto-rolls-back on smoke-eval failure.
 - `workflow_dispatch` with `environment: production` → prod sync + post-deploy session-mode verification (gated by required-reviewer policy on the `production` GitHub Environment).
 - `workflow_dispatch` with `rollback_to_version: <N>` (or `previous`) → version rollback only, no environment changes.
 
-Failure-handling: the `Commit platform IDs back` step runs `if: success() || failure()` so partial state from a mid-deploy crash is always pushed to `main`. Without that, the next deploy reads NULL IDs and creates fresh resources, orphaning the previous ones.
+> **Manual ID hand-off.** Platform IDs are **not committed back to `main`** by the deploy workflow. Doing that would require a fine-grained PAT to push past branch protection, which we deliberately avoid in this public reference repo. The trade-off: if you forget to copy the IDs into `agent.yaml` after the first deploy, the next deploy reads NULL IDs and creates a second set of resources. The cleanup workflow below can prune the orphans.
 
 ### Cleaning up orphaned workspace resources
 
-If a deploy ever ends up creating duplicates anyway (e.g., before this fix existed, or after a manual intervention that bypassed the auto-commit-back):
+If a deploy ever ends up creating duplicates (e.g., because the first-deploy IDs weren't manually copied back before the next deploy ran):
 
 - **From CI**: trigger the `Cleanup orphans` workflow via `workflow_dispatch`. Choose the environment (staging or production), leave `apply` as `false` for a dry-run, then re-run with `apply=true`. Reads each `agents/<id>/agent.yaml`'s `platform.<env>.*` IDs as the source of truth, lists everything carrying this pipeline's `pipeline.repo_id` metadata, and archives whatever the workspace has but `agent.yaml` doesn't reference.
 - **Locally**: `ANTHROPIC_API_KEY=… DEPLOY_ENV=staging pnpm agents:cleanup` (dry-run) then `--apply`. Anthropic's API has no delete; archive is the canonical retire — archived resources stop showing up in `list`, but old IDs stay queryable.
@@ -346,4 +346,4 @@ If a deploy ever ends up creating duplicates anyway (e.g., before this fix exist
 1. Add **Environments** named `staging` and `production`. On `production`, require reviewers and protect from non-`main` refs.
 2. Configure Anthropic Workload Identity Federation: create the federation issuer + service account + per-workspace federation rules in the Anthropic Console, then set repo-level `vars.ANTHROPIC_ORGANIZATION_ID` and `vars.ANTHROPIC_SERVICE_ACCOUNT_ID`, and per-environment `vars.ANTHROPIC_FEDERATION_RULE_ID` and `vars.ANTHROPIC_WORKSPACE_ID`. No static `ANTHROPIC_API_KEY` is needed. Full walkthrough in [docs/credentials.md](docs/credentials.md).
 3. Mark these jobs as required status checks on `main`: `CI success`, `Security summary`, `Analyze (actions)` (CodeQL). The path-conditional jobs (`Agent Diff / diff`, `System Prompt Review / review`, `Cost Budget / budget`, `Agent Evals / Comment results`) are real signals on PRs that touch `agents/**` but should not be required — making them required would block PRs that don't touch agents (since the workflow won't run, no check appears).
-4. Provision a fine-grained PAT for the deploy auto-commit-back step. Repository: this repo only. Permission: **Contents: read and write** (nothing else). Store as repo-level secret `PIPELINE_PUSH_TOKEN`. The deploy workflow uses it to push the `chore(deploy): record managed agent IDs` commit back to `main` — required because branch protection blocks the default `GITHUB_TOKEN` even when the user is an admin.
+4. After the **first** deploy of each agent, copy the platform IDs from the deploy job's step summary into `agents/<id>/agent.yaml` under `platform.<env>.*` and merge that as a PR. Subsequent deploys read those IDs and update the existing managed agent / environment in place.

@@ -127,9 +127,11 @@ environment:
       type: unrestricted
 
 platform:
-  # IDs are written here automatically by `pnpm agents:deploy` after first
-  # deploy. Start with nulls; the script creates new resources and fills
-  # these in. Do not edit by hand.
+  # IDs are populated MANUALLY after the first deploy. Start with nulls;
+  # the deploy script creates new resources and prints the returned IDs in
+  # the workflow's step summary. Copy them here in a follow-up PR. On
+  # subsequent deploys the script reads these IDs and updates the existing
+  # managed agent / environment in place instead of creating duplicates.
   staging:
     managed_agent_id: null
     managed_agent_version: null

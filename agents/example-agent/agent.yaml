@@ -102,12 +102,13 @@ environment:
 
 # Per-deploy-environment server-assigned IDs. Each top-level key is a
 # deploy environment name (e.g. staging, production) — different envs map to
-# different Anthropic Workspaces and get their own IDs. Written by
-# `pnpm agents:deploy`; do not edit by hand.
+# different Anthropic Workspaces and get their own IDs.
 platform:
-  # IDs are written here automatically by `pnpm agents:deploy` after first
-  # deploy. Start with nulls; the script creates new resources and fills
-  # these in. Do not edit by hand.
+  # IDs are populated MANUALLY after the first deploy. Start with nulls;
+  # the deploy script creates new resources and prints the returned IDs in
+  # the workflow's step summary. Copy them here in a follow-up PR. On
+  # subsequent deploys the script reads these IDs and updates the existing
+  # managed agent / environment in place instead of creating duplicates.
   staging:
     managed_agent_id: null
     managed_agent_version: null
