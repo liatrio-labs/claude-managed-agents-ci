@@ -1,0 +1,130 @@
+name: Agent Evals
+
+# Behavioral evals via LLM-as-judge. PRs run cheap Messages-API mode; deploy.yaml
+# runs full session-mode evals against the live Managed Agents runtime.
+
+on:
+  pull_request:
+    paths:
+      - 'agents/**'
+      - 'scripts/run-evals.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: 'Specific agent to evaluate (defaults to all)'
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write # Anthropic WIF (vars.SECRET_PROVIDER=anthropic-wif)
+
+jobs:
+  discover:
+    # Skip on Dependabot PRs — no agent changes, no API key access.
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/claude-managed-agents-pipeline
+        with:
+          github-secrets-json: '{}'
+          require-anthropic-key: 'false'
+      - id: list
+        run: |
+          MATRIX=$(pnpm -s agents:list --json)
+          if [ -n "${{ github.event.inputs.agent }}" ]; then
+            MATRIX="[\"${{ github.event.inputs.agent }}\"]"
+          fi
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  eval:
+    needs: discover
+    if: needs.discover.outputs.matrix != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/claude-managed-agents-pipeline
+        with:
+          secret-provider: ${{ vars.SECRET_PROVIDER || 'github' }}
+          anthropic-organization-id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic-service-account-id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic-federation-rule-id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          github-secrets-json: '{"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}'
+
+      - name: Restore baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: .eval-baselines
+          key: eval-baselines-${{ matrix.agent }}-${{ github.base_ref || 'main' }}
+
+      - name: Run evals
+        env:
+          AGENT: ${{ matrix.agent }}
+          MIN_PASS_RATE: ${{ vars.MIN_PASS_RATE }}
+          MAX_REGRESSION_PCT: ${{ vars.MAX_REGRESSION_PCT }}
+        run: pnpm agents:evals --agent="$AGENT" --mode=messages
+
+      - name: Save baseline (main only)
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: .eval-baselines
+          key: eval-baselines-${{ matrix.agent }}-main
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: evals-${{ matrix.agent }}-${{ github.sha }}
+          path: .eval-results/
+          retention-days: 14
+
+  comment:
+    name: Comment results
+    if: github.event_name == 'pull_request' && always() && github.actor != 'dependabot[bot]'
+    needs: eval
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: evals-*-${{ github.sha }}
+
+      - name: Build combined summary
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          summaries=(artifacts/*/summary.md)
+          [ ${#summaries[@]} -gt 0 ] || exit 0
+          {
+            echo "## Agent Eval Results"
+            echo ""
+            for f in "${summaries[@]}"; do
+              cat "$f"
+              echo ""
+              echo "---"
+              echo ""
+            done
+          } > .eval-summary.md
+
+      - name: Comment on PR (sticky)
+        if: hashFiles('.eval-summary.md') != ''
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          header: agent-evals
+          path: .eval-summary.md

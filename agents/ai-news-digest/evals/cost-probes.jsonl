@@ -1,0 +1,3 @@
+{"id":"short-query","input":"AI news today, top 3."}
+{"id":"specific-company","input":"What's the latest news about Anthropic this week? Keep it to 5 stories."}
+{"id":"long-multi-topic","input":"Build a thorough digest covering the past 7 days across these AI sub-topics: model releases, AI safety / red-teaming, AI policy and regulation, AI hardware (chips and accelerators), and notable industry moves (acquisitions, hires, fundraises). Aim for at least 8 stories total; cite real sources for each."}

@@ -1,0 +1,15 @@
+# Generated lockfile — pnpm controls its formatting; prettier and pnpm
+# disagree on indentation/wrap, and any pnpm install regenerates it.
+pnpm-lock.yaml
+
+# Generated build output
+dist/
+coverage/
+
+# Pipeline runtime artifacts (also gitignored)
+.eval-results/
+.eval-baselines/
+.cost-baselines/
+.agent-diff/
+.prompt-review/
+node_modules/

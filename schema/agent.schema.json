@@ -1,0 +1,141 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Claude Managed Agent — agent.yaml",
+  "description": "Source-of-truth definition for one Managed Agent. The directory containing this file IS the agent. The `agent` and `environment` blocks mirror the request bodies for POST /v1/agents and POST /v1/environments (anthropic-beta: managed-agents-2026-04-01). The `platform` block is populated by the deploy script with the IDs returned by the API. The `evals` block configures local CI behavior and is not sent to Anthropic.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "agent", "environment"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Repo-local agent identifier. Must match the directory name.",
+      "pattern": "^[a-z][a-z0-9-]{1,63}$"
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "model"],
+      "oneOf": [
+        { "required": ["system"], "not": { "required": ["system_path"] } },
+        { "required": ["system_path"], "not": { "required": ["system"] } }
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": ["string", "null"] },
+        "model": {
+          "oneOf": [
+            { "type": "string", "description": "Model id, e.g. claude-opus-4-7." },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id"],
+              "properties": {
+                "id": { "type": "string" },
+                "speed": { "enum": ["standard", "fast"] }
+              }
+            }
+          ]
+        },
+        "system": {
+          "type": "string",
+          "description": "Inline system prompt. Specify either this OR system_path, not both."
+        },
+        "system_path": {
+          "type": "string",
+          "description": "Path (relative to this file) to a markdown file whose contents become the agent's `system` field. Specify either this OR system, not both."
+        },
+        "tools": {
+          "type": "array",
+          "description": "Tool entries as accepted by the API: agent_toolset_20260401, MCP tools, custom tools, etc.",
+          "items": { "type": "object", "required": ["type"] }
+        },
+        "mcp_servers": { "type": "array", "items": { "type": "object" } },
+        "skills": { "type": "array", "items": { "type": "object" } },
+        "callable_agents": {
+          "type": "array",
+          "items": { "type": "object" },
+          "description": "Multi-agent research preview. Requires access."
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "config"],
+      "properties": {
+        "name": { "type": "string" },
+        "config": {
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "cloud" },
+            "packages": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "apt": { "type": "array", "items": { "type": "string" } },
+                "cargo": { "type": "array", "items": { "type": "string" } },
+                "gem": { "type": "array", "items": { "type": "string" } },
+                "go": { "type": "array", "items": { "type": "string" } },
+                "npm": { "type": "array", "items": { "type": "string" } },
+                "pip": { "type": "array", "items": { "type": "string" } }
+              }
+            },
+            "networking": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type"],
+                  "properties": { "type": { "const": "unrestricted" } }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type"],
+                  "properties": {
+                    "type": { "const": "limited" },
+                    "allowed_hosts": {
+                      "type": "array",
+                      "items": { "type": "string", "pattern": "^https://" }
+                    },
+                    "allow_mcp_servers": { "type": "boolean" },
+                    "allow_package_managers": { "type": "boolean" }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "description": "Per-deploy-environment server-assigned IDs. Each top-level key is a deploy environment name (e.g. staging, production). Written by deploy.ts; do not edit by hand. Different environments use different Anthropic Workspaces, so each gets its own block of IDs.",
+      "patternProperties": {
+        "^[a-z][a-z0-9-]{0,32}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "managed_agent_id": { "type": ["string", "null"] },
+            "managed_agent_version": { "type": ["integer", "null"], "minimum": 1 },
+            "managed_environment_id": { "type": ["string", "null"] }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "evals": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default_mode": { "enum": ["messages", "session"] },
+        "session_mode_environment_required": { "type": "boolean" }
+      }
+    }
+  }
+}

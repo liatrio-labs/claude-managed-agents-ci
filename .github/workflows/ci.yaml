@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  merge_group:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint & format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/claude-managed-agents-pipeline
+        with:
+          github-secrets-json: '{}'
+          require-anthropic-key: 'false'
+      - run: pnpm lint
+      - run: pnpm format:check
+
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/claude-managed-agents-pipeline
+        with:
+          github-secrets-json: '{}'
+          require-anthropic-key: 'false'
+      - run: pnpm typecheck
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/claude-managed-agents-pipeline
+        with:
+          github-secrets-json: '{}'
+          require-anthropic-key: 'false'
+      - run: pnpm test
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [lint, typecheck, unit]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/claude-managed-agents-pipeline
+        with:
+          github-secrets-json: '{}'
+          require-anthropic-key: 'false'
+      - run: pnpm build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: build-${{ github.sha }}
+          path: dist/
+          retention-days: 7
+
+  prompt-lint:
+    name: Static prompt lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/claude-managed-agents-pipeline
+        with:
+          github-secrets-json: '{}'
+          require-anthropic-key: 'false'
+      - run: pnpm agents:lint-prompts
+
+  ci-success:
+    name: CI success
+    if: always()
+    needs: [lint, typecheck, unit, build, prompt-lint]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all jobs
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "One or more required jobs failed."
+            exit 1
+          fi
+          echo "All required CI jobs passed."

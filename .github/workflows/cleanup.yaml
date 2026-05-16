@@ -1,0 +1,59 @@
+name: Cleanup orphans
+
+# Manually-triggered cleanup of orphaned Managed Agents and Environments
+# in a Workspace. Reads agents/<id>/agent.yaml platform.<env>.* IDs as the
+# source of truth, lists everything tagged with this pipeline's
+# `pipeline.repo_id` metadata in the workspace, and reports — or with
+# `apply: true`, archives — any active resource whose ID isn't in the YAML.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Workspace to clean up (selects the GitHub Environment, which provisions the matching ANTHROPIC_API_KEY)'
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      apply:
+        description: 'Archive the orphans. Leave false for a dry-run report.'
+        required: true
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+permissions:
+  contents: read
+  id-token: write # Anthropic WIF (vars.SECRET_PROVIDER=anthropic-wif)
+
+concurrency:
+  group: cleanup-${{ github.event.inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Cleanup ${{ github.event.inputs.environment }} (apply=${{ github.event.inputs.apply }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/claude-managed-agents-pipeline
+        with:
+          secret-provider: ${{ vars.SECRET_PROVIDER || 'github' }}
+          anthropic-organization-id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic-service-account-id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic-federation-rule-id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          github-secrets-json: '{"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}'
+
+      - name: Run cleanup
+        env:
+          DEPLOY_ENV: ${{ github.event.inputs.environment }}
+        run: |
+          if [ "${{ github.event.inputs.apply }}" = "true" ]; then
+            pnpm agents:cleanup --apply
+          else
+            pnpm agents:cleanup
+          fi

@@ -1,0 +1,51 @@
+{
+  "name": "claude-managed-agents-ci",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CI/CD for Anthropic Managed Agents: system prompt review, behavioral evals, prompt-injection red teaming, cost regression, and workspace-scoped deploys.",
+  "author": "Liatrio",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/liatrio-labs/claude-managed-agents-ci"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "lint": "eslint . --max-warnings=0",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --reporter=verbose",
+    "test:watch": "vitest",
+    "build": "tsc -p tsconfig.build.json",
+    "agents:list": "tsx scripts/list-agents.ts",
+    "agents:lint-prompts": "tsx scripts/lint-prompts.ts",
+    "agents:review-prompts": "tsx scripts/review-system-prompts.ts",
+    "agents:evals": "tsx scripts/run-evals.ts",
+    "agents:injection-test": "tsx scripts/prompt-injection-test.ts",
+    "agents:cost-budget": "tsx scripts/cost-budget-check.ts",
+    "agents:deploy": "tsx scripts/deploy.ts",
+    "agents:diff": "tsx scripts/diff-agents.ts",
+    "agents:cleanup": "tsx scripts/cleanup-orphans.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.92.0",
+    "yaml": "^2.5.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@typescript-eslint/eslint-plugin": "^8.10.0",
+    "@typescript-eslint/parser": "^8.10.0",
+    "eslint": "^9.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.3.3",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,56 @@
+name: Cost Budget
+
+# Token + USD-cost regression check on the agents' cost-probes.jsonl. Fails on
+# >MAX_COST_INCREASE_PCT cost regression or >MAX_INPUT_TOKEN_INCREASE_PCT input
+# token regression vs the cached main baseline.
+
+on:
+  pull_request:
+    paths:
+      - 'agents/**'
+      - 'scripts/cost-budget-check.ts'
+  schedule:
+    - cron: '0 8 * * 1' # weekly drift check
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write # Anthropic WIF (vars.SECRET_PROVIDER=anthropic-wif)
+
+jobs:
+  budget:
+    # Skip on Dependabot PRs — no agent changes, no API key access.
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/claude-managed-agents-pipeline
+        with:
+          secret-provider: ${{ vars.SECRET_PROVIDER || 'github' }}
+          anthropic-organization-id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic-service-account-id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic-federation-rule-id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          github-secrets-json: '{"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}'
+
+      - name: Restore cost baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: .cost-baselines
+          key: cost-baseline-main-v1
+
+      - name: Cost budget check
+        env:
+          MAX_COST_INCREASE_PCT: ${{ vars.MAX_COST_INCREASE_PCT }}
+          MAX_INPUT_TOKEN_INCREASE_PCT: ${{ vars.MAX_INPUT_TOKEN_INCREASE_PCT }}
+        run: pnpm agents:cost-budget
+
+      - name: Save baseline (main only)
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: .cost-baselines
+          key: cost-baseline-main-v1

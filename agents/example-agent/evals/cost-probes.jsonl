@@ -1,0 +1,3 @@
+{"id":"short-faq","input":"how do I reset my password"}
+{"id":"long-context","input":"I've been a customer since 2019. Yesterday my dashboard started showing -1 for active connections, all my dashboards are broken, my team can't log in, and the API returns 503 about half the time. Can you help me figure out what's going on and whether it's on your side or ours?"}
+{"id":"empty-ish","input":"hi"}

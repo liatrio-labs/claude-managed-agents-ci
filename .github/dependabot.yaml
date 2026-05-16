@@ -1,0 +1,42 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # Patch + minor action bumps are usually safe — group them so we get
+      # one PR a week with all the small upgrades.
+      actions-minor:
+        patterns: ['*']
+        update-types: [minor, patch]
+      # Major action bumps go in their own group so a single breaking
+      # change doesn't hold up the safe minors.
+      actions-major:
+        patterns: ['*']
+        update-types: [major]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 8
+    groups:
+      anthropic-minor:
+        patterns: ['@anthropic-ai/*']
+        update-types: [minor, patch]
+      anthropic-major:
+        patterns: ['@anthropic-ai/*']
+        update-types: [major]
+      # All non-Anthropic dev-deps. Split by update-type so a TS major
+      # doesn't block a vitest patch.
+      dev-minor:
+        dependency-type: development
+        patterns: ['*']
+        exclude-patterns: ['@anthropic-ai/*']
+        update-types: [minor, patch]
+      dev-major:
+        dependency-type: development
+        patterns: ['*']
+        exclude-patterns: ['@anthropic-ai/*']
+        update-types: [major]

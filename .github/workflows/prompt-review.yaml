@@ -1,0 +1,75 @@
+name: System Prompt Review
+
+# Claude Opus reviews every changed system prompt against a 7-dimension rubric,
+# compares the score to the cached main baseline, and posts a sticky PR comment.
+
+on:
+  pull_request:
+    paths:
+      - 'agents/**/agent.yaml'
+      - 'agents/**/system-prompt*'
+      - 'agents/**/prompts/**'
+      - 'agents/**/*.md'
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write # Anthropic WIF (vars.SECRET_PROVIDER=anthropic-wif)
+
+jobs:
+  review:
+    # Skip on Dependabot PRs — no agent-prompt changes, no API key access.
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: staging
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/claude-managed-agents-pipeline
+        with:
+          secret-provider: ${{ vars.SECRET_PROVIDER || 'github' }}
+          anthropic-organization-id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic-service-account-id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic-federation-rule-id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          github-secrets-json: '{"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}'
+
+      - name: Identify changed prompts
+        id: changes
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- \
+            'agents/**/agent.yaml' \
+            'agents/**/system-prompt*' \
+            'agents/**/prompts/**' \
+            'agents/**/*.md' 2>/dev/null | tr '\n' ' ' || true)
+          echo "files=$CHANGED" >> "$GITHUB_OUTPUT"
+
+      - name: Run prompt review
+        if: steps.changes.outputs.files != ''
+        env:
+          CHANGED_FILES: ${{ steps.changes.outputs.files }}
+          BASE_REF: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha }}
+          MIN_QUALITY_SCORE: ${{ vars.MIN_PROMPT_QUALITY_SCORE }}
+          MAX_QUALITY_REGRESSION: ${{ vars.MAX_PROMPT_QUALITY_REGRESSION }}
+        run: pnpm agents:review-prompts
+
+      - name: Upload review report
+        if: always() && steps.changes.outputs.files != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: prompt-review-${{ github.sha }}
+          path: .prompt-review/
+          retention-days: 30
+
+      - name: Comment review on PR
+        if: steps.changes.outputs.files != '' && hashFiles('.prompt-review/summary.md') != ''
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          header: prompt-review
+          path: .prompt-review/summary.md

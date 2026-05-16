@@ -1,0 +1,103 @@
+name: Release
+
+# Publishes new versions of the claude-managed-agents-pipeline composite action.
+# Trigger by pushing a tag like `v1.2.3` (semver). The workflow moves the
+# floating major-version tag (e.g. `v1`) to point at the new release, so
+# callers using `@v1` automatically get the latest 1.x.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*' # pre-releases, e.g. v1.0.0-rc.1
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)publish (e.g. v1.2.3)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.value }}
+      major: ${{ steps.tag.outputs.major }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - id: tag
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if ! [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-.*)?$ ]]; then
+            echo "::error::Tag must be semver-shaped (e.g. v1.2.3 or v1.2.3-rc.1) — got '$TAG'"
+            exit 1
+          fi
+          MAJOR="v${BASH_REMATCH[1]}"
+          if [ -n "${BASH_REMATCH[4]}" ]; then PRE=true; else PRE=false; fi
+          echo "value=$TAG" >> "$GITHUB_OUTPUT"
+          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
+
+      - name: Sanity-check action.yaml
+        run: |
+          test -f .github/actions/claude-managed-agents-pipeline/action.yaml
+          grep -q "^branding:" .github/actions/claude-managed-agents-pipeline/action.yaml
+          grep -q "^name:" .github/actions/claude-managed-agents-pipeline/action.yaml
+
+      - name: YAML parse all workflows + action
+        run: |
+          python3 - <<'PY'
+          import sys, yaml, pathlib
+          ok = True
+          for p in pathlib.Path('.github').rglob('*.yaml'):
+              try: yaml.safe_load(p.read_text())
+              except Exception as e:
+                  print(f'FAIL {p}: {e}'); ok = False
+          sys.exit(0 if ok else 1)
+          PY
+
+  release:
+    name: Publish release
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.validate.outputs.tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Move floating major-version tag (${{ needs.validate.outputs.major }})
+        if: needs.validate.outputs.prerelease == 'false'
+        env:
+          MAJOR: ${{ needs.validate.outputs.major }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -fa "$MAJOR" -m "Track $TAG"
+          git push origin "$MAJOR" --force
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.validate.outputs.tag }}
+          name: ${{ needs.validate.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ needs.validate.outputs.prerelease == 'true' }}
+          body: |
+            ## Claude Managed Agents Pipeline — ${{ needs.validate.outputs.tag }}
+
+            Consumable artifact:
+            - **Composite action** — `OWNER/REPO/.github/actions/claude-managed-agents-pipeline@${{ needs.validate.outputs.tag }}`
+
+            Floating major tag `${{ needs.validate.outputs.major }}` ${{ needs.validate.outputs.prerelease == 'true' && 'NOT' || '' }} updated to track this release.

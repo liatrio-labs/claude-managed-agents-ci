@@ -1,0 +1,12 @@
+# Default owners for everything. Replace `@your-org/...` with your real teams.
+*                                  @your-org/agent-platform
+
+# An agent's source-of-truth file gets a stricter review (platform + safety).
+agents/**/agent.yaml               @your-org/agent-platform @your-org/safety
+agents/**/system-prompt*           @your-org/agent-platform @your-org/safety
+agents/**/evals/                   @your-org/agent-platform @your-org/safety
+
+# CI / secret-provider wiring requires platform + security.
+.github/workflows/                 @your-org/agent-platform @your-org/security
+.github/actions/claude-managed-agents-pipeline/      @your-org/agent-platform @your-org/security
+docs/credentials.md                @your-org/security

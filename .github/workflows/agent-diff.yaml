@@ -1,0 +1,60 @@
+name: Agent Diff
+
+# Posts a sticky PR comment describing what each agent change does on merge:
+# config diff, system-prompt diff, optional LLM behavioral summary, and the
+# predicted version-bump per environment.
+
+on:
+  pull_request:
+    paths:
+      - 'agents/**'
+      - 'schema/agent.schema.json'
+      - 'scripts/diff-agents.ts'
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write # Anthropic WIF (vars.SECRET_PROVIDER=anthropic-wif)
+
+jobs:
+  diff:
+    # Skip on Dependabot PRs — they don't have access to ANTHROPIC_API_KEY
+    # by default, and dep updates don't change agent behavior anyway.
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: staging
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/claude-managed-agents-pipeline
+        with:
+          secret-provider: ${{ vars.SECRET_PROVIDER || 'github' }}
+          anthropic-organization-id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic-service-account-id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic-federation-rule-id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          github-secrets-json: '{"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}'
+          require-anthropic-key: 'false' # diff still works without a key
+
+      - name: Generate agent change report
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha }}
+        run: pnpm agents:diff
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-diff-${{ github.sha }}
+          path: .agent-diff/
+          retention-days: 30
+
+      - name: Comment on PR (sticky)
+        if: always() && hashFiles('.agent-diff/summary.md') != ''
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          header: agent-diff
+          path: .agent-diff/summary.md
