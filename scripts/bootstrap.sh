@@ -22,8 +22,43 @@ set -euo pipefail
 
 ANTHROPIC_API_BASE="${ANTHROPIC_API_BASE:-https://api.anthropic.com}"
 GITHUB_OIDC_ISSUER_URL="https://token.actions.githubusercontent.com"
-DEFAULT_SA_NAME="${SA_NAME:-claude-managed-agents-ci}"
-DEFAULT_REPO="${GITHUB_REPO:-liatrio-labs/claude-managed-agents-ci}"
+
+# Try to detect the GitHub repo from local context (no hardcoded org/name).
+# Order: $GITHUB_REPO env var, then `gh repo view`, then `git remote`.
+detect_repo() {
+  if [[ -n "${GITHUB_REPO:-}" ]]; then
+    echo "$GITHUB_REPO"
+    return
+  fi
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    local v
+    v=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
+    if [[ -n "$v" ]]; then
+      echo "$v"
+      return
+    fi
+  fi
+  if command -v git >/dev/null 2>&1; then
+    local url
+    url=$(git config --get remote.origin.url 2>/dev/null || true)
+    # Match owner/name from both https and ssh URLs; strip optional `.git`.
+    if [[ "$url" =~ github\.com[:/]([^/]+)/([^/]+?)(\.git)?$ ]]; then
+      echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+      return
+    fi
+  fi
+}
+
+DEFAULT_REPO="$(detect_repo)"
+# Default SA name comes from the repo's basename so it auto-adapts to forks.
+# Override with $SA_NAME if you want something else (e.g. a shared CI SA).
+if [[ -n "${SA_NAME:-}" ]]; then
+  DEFAULT_SA_NAME="$SA_NAME"
+elif [[ -n "$DEFAULT_REPO" ]]; then
+  DEFAULT_SA_NAME="${DEFAULT_REPO##*/}"
+else
+  DEFAULT_SA_NAME=""
+fi
 
 # ─── deps ──────────────────────────────────────────────────────────────
 for cmd in curl jq; do
@@ -59,17 +94,25 @@ prompt_secret() {
 }
 
 echo "─── Anthropic WIF bootstrap ─────────────────────────────────────"
-echo "This sets up Workload Identity Federation for:"
-echo "  repo:        $DEFAULT_REPO"
-echo "  service acct: $DEFAULT_SA_NAME"
+echo "Sets up Workload Identity Federation so a GitHub Actions workflow"
+echo "in your repo can mint short-lived Anthropic access tokens without"
+echo "a static API key."
 echo
 echo "You will need an Anthropic Admin API key (Settings → API keys →"
-echo "Admin keys in the Console). It is NOT stored anywhere by this"
-echo "script and is only used for the duration of this run."
+echo "Admin keys in the Console). It is read silently, NOT stored, and"
+echo "is only used for the duration of this run."
 echo
 
 prompt GITHUB_REPO "GitHub repo (owner/name)" "$DEFAULT_REPO"
-prompt SA_NAME    "Service account name" "$DEFAULT_SA_NAME"
+if [[ -z "$GITHUB_REPO" || "$GITHUB_REPO" != */* ]]; then
+  echo "error: repo must be in 'owner/name' form (e.g. acme/my-agents)" >&2
+  exit 1
+fi
+prompt SA_NAME    "Service account name (one per CI workload; reused if already exists)" "$DEFAULT_SA_NAME"
+if [[ -z "$SA_NAME" ]]; then
+  echo "error: service account name is required" >&2
+  exit 1
+fi
 prompt_secret ADMIN_KEY "Anthropic Admin API key (sk-ant-…)"
 
 if [[ -z "$ADMIN_KEY" || "$ADMIN_KEY" != sk-ant-* ]]; then
