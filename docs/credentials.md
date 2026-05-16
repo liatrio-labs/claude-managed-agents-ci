@@ -195,7 +195,7 @@ Required vars:
 Example caller wiring:
 
 ```yaml
-- uses: OWNER/REPO/.github/actions/claude-managed-agents-pipeline@v1
+- uses: ./.github/actions/claude-managed-agents-pipeline
   with:
     secret-provider: lastpass
     lp-username: ${{ secrets.LASTPASS_USERNAME }}

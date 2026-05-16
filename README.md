@@ -47,15 +47,12 @@ Production-grade GitHub Actions pipeline for repositories that ship [Claude Mana
 - **Per-Anthropic-Workspace key scoping** — each GitHub Environment binds to a different Workspace, so staging and production deploys never cross ([workspaces.md](docs/workspaces.md))
 - **Anthropic Vault** support for per-end-user MCP OAuth credentials at session create time ([vaults.md](docs/vaults.md))
 - **Cleanup workflow** — `Cleanup orphans` (`workflow_dispatch`, dry-run by default) lists and optionally archives Managed Agents / Environments in a Workspace that don't match `agent.yaml`'s `platform.<env>.*` IDs. Same logic available locally as `pnpm agents:cleanup`.
-- **Composite action published to GitHub Marketplace** — consume the credential-provisioning piece from any workflow without forking ([consume-from-another-repo.md](docs/consume-from-another-repo.md))
 - All workflows run on `ubuntu-latest`; the action relies on Node + corepack already preinstalled (no extra setup steps)
 
 This repo is a **reference implementation** — two working agents under [`agents/`](agents/) plus the full set of CI workflows wired to them. Fork or copy and adapt:
 
 - [`example-agent`](agents/example-agent/agent.yaml) — minimal scaffold (support triage with no live tool calls)
 - [`ai-news-digest`](agents/ai-news-digest/agent.yaml) — real research agent that uses `web_search` + `web_fetch` and serves as an end-to-end smoke test of the pipeline (see [Smoke test](#smoke-testing-the-pipeline))
-
-The composite action that handles credential provisioning ([`claude-managed-agents-pipeline`](.github/actions/claude-managed-agents-pipeline/action.yaml)) is also published to the GitHub Marketplace and can be wired into your own workflows independently — see [docs/consume-from-another-repo.md](docs/consume-from-another-repo.md).
 
 ## What it does
 
@@ -69,24 +66,7 @@ The composite action that handles credential provisioning ([`claude-managed-agen
 | [`cost-budget.yaml`](.github/workflows/cost-budget.yaml)     | PR touching prompts/agents | runs cost probes, tracks token + USD spend, fails on >20% cost or >15% input-token regression vs main                                                                                                                       |
 | [`deploy.yaml`](.github/workflows/deploy.yaml)               | merge → main, manual prod  | syncs each agent to `POST /v1/agents` (versioned) + `POST /v1/environments`; smoke evals run as **real sessions** against the just-shipped version; auto-rollback on prod failure                                           |
 
-All workflows share one composite action — [`.github/actions/claude-managed-agents-pipeline/action.yaml`](.github/actions/claude-managed-agents-pipeline/action.yaml) — that fetches `ANTHROPIC_API_KEY` (and any other infra secrets) from your chosen provider. Defaults to **GitHub Secrets**; also supports AWS Secrets Manager, HashiCorp Vault, Azure Key Vault, 1Password, and LastPass. OIDC-first where the provider supports it.
-
-## Consuming this from your repo
-
-The simplest path is to **fork or copy this repo**, replace the contents of `agents/` with your own agent definitions, and configure your secret provider. The workflows under `.github/workflows/` are the source of truth — there's no separate "reusable" surface to wire up.
-
-If you'd rather wire your own workflows and just want the credential-provisioning piece, the composite action is published to the GitHub Marketplace:
-
-```yaml
-- uses: OWNER/REPO/.github/actions/claude-managed-agents-pipeline@v1
-  with:
-    secret-provider: aws # or vault | azure | 1password | lastpass | github
-    aws-role-arn: arn:aws:iam::…:role/gh-claude-agents-ci
-    aws-region: us-east-1
-    aws-secret-id: claude/managed-agents/staging
-```
-
-Full guide: [docs/consume-from-another-repo.md](docs/consume-from-another-repo.md). Releases follow semver via [docs/publishing.md](docs/publishing.md).
+All workflows share one internal composite action — [`.github/actions/claude-managed-agents-pipeline/action.yaml`](.github/actions/claude-managed-agents-pipeline/action.yaml) — that provisions `ANTHROPIC_API_KEY` from your chosen secret provider. Defaults to **GitHub Secrets**; also supports Anthropic Workload Identity Federation (`anthropic-wif`), AWS Secrets Manager, HashiCorp Vault, Azure Key Vault, 1Password, and LastPass. OIDC-first where the provider supports it. The action is consumed locally via a relative path (`./.github/actions/...`) and is not published as a standalone Marketplace action — fork or copy this repo to use it.
 
 ## Workspaces — where your agents live
 
@@ -270,8 +250,6 @@ scripts/
   deploy.ts                     # syncs agent + environment to Managed Agents API
 docs/
   managed-agents.md             # how this pipeline maps to the Anthropic API
-  consume-from-another-repo.md  # forking, or using just the composite action
-  publishing.md                 # release process + Marketplace listing
   vaults.md                     # Anthropic per-user MCP OAuth vaults
   credentials.md                # infra secret providers (where ANTHROPIC_API_KEY lives)
 ```
