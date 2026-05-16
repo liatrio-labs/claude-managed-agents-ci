@@ -67,7 +67,7 @@ jobs:
           github-secrets-json: '{"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}'
 
       - name: Restore baseline
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .eval-baselines
           key: eval-baselines-${{ matrix.agent }}-${{ github.base_ref || 'main' }}
@@ -81,7 +81,7 @@ jobs:
 
       - name: Save baseline (main only)
         if: github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: .eval-baselines
           key: eval-baselines-${{ matrix.agent }}-main
