@@ -37,7 +37,7 @@ jobs:
           github-secrets-json: '{"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}'
 
       - name: Restore cost baseline
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .cost-baselines
           key: cost-baseline-main-v1
@@ -50,7 +50,7 @@ jobs:
 
       - name: Save baseline (main only)
         if: github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: .cost-baselines
           key: cost-baseline-main-v1
