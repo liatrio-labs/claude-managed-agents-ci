@@ -45,14 +45,17 @@ DEFAULT_REPO="$(detect_repo)"
 
 # ─── prompts + validation ──────────────────────────────────────────────
 prompt() {
-  local var="$1" msg="$2" default="${3:-}" value
+  local var="$1" msg="$2" default="${3:-}" value=""
   # Read from /dev/tty so this works even when stdin is a pipe
   # (e.g. when the script was launched via `curl … | bash`).
   if [[ -n "$default" ]]; then
-    read -r -p "$msg [$default]: " value </dev/tty
+    read -r -p "$msg [$default]: " value </dev/tty || true
     value="${value:-$default}"
   else
-    read -r -p "$msg: " value </dev/tty
+    read -r -p "$msg: " value </dev/tty || true
+  fi
+  if [[ "${BOOTSTRAP_DEBUG:-}" == "1" ]]; then
+    echo "  [debug] raw capture: '$value' (len=${#value})" >&2
   fi
   # Strip leading/trailing whitespace AND any stray CR (Windows paste, etc.)
   value="${value#"${value%%[![:space:]]*}"}"
