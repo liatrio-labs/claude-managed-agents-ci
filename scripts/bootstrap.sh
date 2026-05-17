@@ -58,7 +58,7 @@ prompt() {
 require_prefix() {
   # require_prefix VAR_NAME EXPECTED_PREFIX HUMAN_HINT
   local name="$1" prefix="$2" hint="$3"
-  local val="${!name}"
+  local val="${!name:-}"
   if [[ -z "$val" ]]; then
     echo "error: $name is required ($hint)" >&2
     exit 1
