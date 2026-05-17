@@ -28,6 +28,17 @@ if ! gh auth status >/dev/null 2>&1; then
   exit 1
 fi
 
+# ─── input source ──────────────────────────────────────────────────────
+# Open /dev/tty as fd 3 if it's readable, so prompts work even when the
+# script was launched via `curl … | bash` (stdin is the pipe). Falls back
+# to stdin (fd 0) for environments where /dev/tty isn't available (some
+# CI / IDE-integrated terminals).
+if [[ -r /dev/tty ]] && exec 3</dev/tty 2>/dev/null; then
+  INPUT_FD=3
+else
+  INPUT_FD=0
+fi
+
 # ─── repo detection ────────────────────────────────────────────────────
 detect_repo() {
   if [[ -n "${GITHUB_REPO:-}" ]]; then echo "$GITHUB_REPO"; return; fi
@@ -46,16 +57,14 @@ DEFAULT_REPO="$(detect_repo)"
 # ─── prompts + validation ──────────────────────────────────────────────
 prompt() {
   local var="$1" msg="$2" default="${3:-}" value=""
-  # Read from /dev/tty so this works even when stdin is a pipe
-  # (e.g. when the script was launched via `curl … | bash`).
   if [[ -n "$default" ]]; then
-    read -r -p "$msg [$default]: " value </dev/tty || true
+    read -r -u "$INPUT_FD" -p "$msg [$default]: " value || true
     value="${value:-$default}"
   else
-    read -r -p "$msg: " value </dev/tty || true
+    read -r -u "$INPUT_FD" -p "$msg: " value || true
   fi
   if [[ "${BOOTSTRAP_DEBUG:-}" == "1" ]]; then
-    echo "  [debug] raw capture: '$value' (len=${#value})" >&2
+    echo "  [debug] raw capture from fd $INPUT_FD: '$value' (len=${#value})" >&2
   fi
   # Strip leading/trailing whitespace AND any stray CR (Windows paste, etc.)
   value="${value#"${value%%[![:space:]]*}"}"
@@ -65,24 +74,25 @@ prompt() {
 }
 
 require_prefix() {
-  # require_prefix VAR_NAME EXPECTED_PREFIX HUMAN_HINT
-  local name="$1" prefix="$2" hint="$3"
-  local val="${!name:-}"
+  # require_prefix LABEL VALUE EXPECTED_PREFIX HUMAN_HINT
+  # Pass the value directly (not a variable name) — bash 3.2's `${!name}`
+  # indirect expansion doesn't reliably see globals set via `printf -v`
+  # from another function, so indirection breaks on macOS default bash.
+  local label="$1" val="$2" prefix="$3" hint="$4"
   if [[ -z "$val" ]]; then
-    echo "error: $name is required ($hint)" >&2
+    echo "error: $label is required ($hint)" >&2
     exit 1
   fi
   if [[ "$val" != "$prefix"* ]]; then
-    echo "error: $name should start with '$prefix' (got '$val'). $hint" >&2
+    echo "error: $label should start with '$prefix' (got '$val'). $hint" >&2
     exit 1
   fi
 }
 
 require_uuid() {
-  local name="$1" val="${!name:-}"
+  local label="$1" val="$2"
   if [[ ! "$val" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
-    echo "error: $name should be a UUID (got '$val', length=${#val})" >&2
-    # Show hex if there are non-printable chars hiding in there.
+    echo "error: $label should be a UUID (got '$val', length=${#val})" >&2
     if [[ -n "$val" ]]; then
       echo "       hex: $(printf '%s' "$val" | od -c | head -2)" >&2
     fi
@@ -121,7 +131,7 @@ Copy the UUID at the top of the page (no prefix, just the UUID).
 
 EOF
 prompt ORG_ID "Organization ID (UUID)"
-require_uuid ORG_ID
+require_uuid ORG_ID "$ORG_ID"
 
 # ─── 2. Service Account ────────────────────────────────────────────────
 cat <<'EOF'
@@ -137,7 +147,7 @@ Copy the resulting svac_… ID.
 
 EOF
 prompt SA_ID "Service account ID (svac_…)"
-require_prefix SA_ID "svac_" "Settings → Service accounts → the one you created"
+require_prefix SA_ID "$SA_ID" "svac_" "Settings → Service accounts → the one you created"
 
 # ─── 3. OIDC Issuer ────────────────────────────────────────────────────
 cat <<EOF
@@ -154,7 +164,7 @@ when creating federation rules in the next step. (If you've already
 created an issuer for this repo, reuse it.)
 
 EOF
-read -r -p "Press enter once the issuer is created (or already exists)..." </dev/tty
+read -r -u "$INPUT_FD" -p "Press enter once the issuer is created (or already exists)..." || true
 
 # ─── 4. Federation Rules ───────────────────────────────────────────────
 cat <<EOF
@@ -188,14 +198,14 @@ by the GitHub 'production' Environment can mint prod tokens.
 EOF
 
 prompt STAGING_WS_ID    "Staging workspace ID (wrkspc_…)"
-require_prefix STAGING_WS_ID "wrkspc_" "Settings → Workspaces"
+require_prefix STAGING_WS_ID "$STAGING_WS_ID" "wrkspc_" "Settings → Workspaces"
 prompt STAGING_RULE_ID  "Staging federation rule ID (fdrl_…)"
-require_prefix STAGING_RULE_ID "fdrl_" "Settings → Workload identity → Federation rules"
+require_prefix STAGING_RULE_ID "$STAGING_RULE_ID" "fdrl_" "Settings → Workload identity → Federation rules"
 
 prompt PROD_WS_ID       "Production workspace ID (wrkspc_…)"
-require_prefix PROD_WS_ID "wrkspc_" "Settings → Workspaces"
+require_prefix PROD_WS_ID "$PROD_WS_ID" "wrkspc_" "Settings → Workspaces"
 prompt PROD_RULE_ID     "Production federation rule ID (fdrl_…)"
-require_prefix PROD_RULE_ID "fdrl_" "Settings → Workload identity → Federation rules"
+require_prefix PROD_RULE_ID "$PROD_RULE_ID" "fdrl_" "Settings → Workload identity → Federation rules"
 
 if [[ "$STAGING_WS_ID" == "$PROD_WS_ID" ]]; then
   echo "warning: staging and production workspace IDs are the same — that means a 'prod' deploy will land in the staging workspace. Probably not what you want." >&2
@@ -226,7 +236,7 @@ About to set the following in $GITHUB_REPO:
 
 EOF
 
-read -r -p "Apply these now via gh CLI? [y/N]: " confirm </dev/tty
+read -r -u "$INPUT_FD" -p "Apply these now via gh CLI? [y/N]: " confirm || true
 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
   echo
   echo "Skipped. Copy-pasteable commands:"
