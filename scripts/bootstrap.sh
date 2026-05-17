@@ -29,14 +29,12 @@ if ! gh auth status >/dev/null 2>&1; then
 fi
 
 # ─── input source ──────────────────────────────────────────────────────
-# Open /dev/tty as fd 3 if it's readable, so prompts work even when the
-# script was launched via `curl … | bash` (stdin is the pipe). Falls back
-# to stdin (fd 0) for environments where /dev/tty isn't available (some
-# CI / IDE-integrated terminals).
-if [[ -r /dev/tty ]] && exec 3</dev/tty 2>/dev/null; then
-  INPUT_FD=3
-else
-  INPUT_FD=0
+# When the script was launched via `curl … | bash`, stdin is the pipe
+# (already exhausted). Replace it with /dev/tty so plain `read` works.
+# When the user runs `bash /path/to/script`, stdin is already the
+# terminal, so we leave it alone.
+if [[ ! -t 0 ]] && [[ -r /dev/tty ]]; then
+  exec </dev/tty 2>/dev/null || true
 fi
 
 # ─── repo detection ────────────────────────────────────────────────────
@@ -58,13 +56,13 @@ DEFAULT_REPO="$(detect_repo)"
 prompt() {
   local var="$1" msg="$2" default="${3:-}" value=""
   if [[ -n "$default" ]]; then
-    read -r -u "$INPUT_FD" -p "$msg [$default]: " value || true
+    read -r -p "$msg [$default]: " value || true
     value="${value:-$default}"
   else
-    read -r -u "$INPUT_FD" -p "$msg: " value || true
+    read -r -p "$msg: " value || true
   fi
   if [[ "${BOOTSTRAP_DEBUG:-}" == "1" ]]; then
-    echo "  [debug] raw capture from fd $INPUT_FD: '$value' (len=${#value})" >&2
+    echo "  [debug] raw capture: '$value' (len=${#value})" >&2
   fi
   # Strip leading/trailing whitespace AND any stray CR (Windows paste, etc.)
   value="${value#"${value%%[![:space:]]*}"}"
@@ -164,7 +162,7 @@ when creating federation rules in the next step. (If you've already
 created an issuer for this repo, reuse it.)
 
 EOF
-read -r -u "$INPUT_FD" -p "Press enter once the issuer is created (or already exists)..." || true
+read -r -p "Press enter once the issuer is created (or already exists)..." || true
 
 # ─── 4. Federation Rules ───────────────────────────────────────────────
 cat <<EOF
@@ -236,7 +234,7 @@ About to set the following in $GITHUB_REPO:
 
 EOF
 
-read -r -u "$INPUT_FD" -p "Apply these now via gh CLI? [y/N]: " confirm || true
+read -r -p "Apply these now via gh CLI? [y/N]: " confirm || true
 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
   echo
   echo "Skipped. Copy-pasteable commands:"
