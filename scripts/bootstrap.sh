@@ -70,7 +70,7 @@ require_prefix() {
 }
 
 require_uuid() {
-  local name="$1" val="${!name}"
+  local name="$1" val="${!name:-}"
   if [[ ! "$val" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
     echo "error: $name should be a UUID (got '$val')" >&2
     exit 1
