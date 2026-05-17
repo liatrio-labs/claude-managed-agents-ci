@@ -52,6 +52,10 @@ prompt() {
   else
     read -r -p "$msg: " value
   fi
+  # Strip leading/trailing whitespace AND any stray CR (Windows paste, etc.)
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  value="${value//$'\r'/}"
   printf -v "$var" '%s' "$value"
 }
 
@@ -72,7 +76,11 @@ require_prefix() {
 require_uuid() {
   local name="$1" val="${!name:-}"
   if [[ ! "$val" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
-    echo "error: $name should be a UUID (got '$val')" >&2
+    echo "error: $name should be a UUID (got '$val', length=${#val})" >&2
+    # Show hex if there are non-printable chars hiding in there.
+    if [[ -n "$val" ]]; then
+      echo "       hex: $(printf '%s' "$val" | od -c | head -2)" >&2
+    fi
     exit 1
   fi
 }
