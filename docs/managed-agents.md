@@ -4,7 +4,7 @@
 
 All API calls use the beta header **`anthropic-beta: managed-agents-2026-04-01`** (set by `scripts/lib/managed-agents-api.ts`).
 
-> **Workspace scoping note:** every agent / environment / session / vault you create lives in the [Anthropic Workspace](workspaces.md) of the API key that created it. There is no `workspace_id` parameter on `POST /v1/agents` — it is implicit in the key. Make sure the `ANTHROPIC_API_KEY` your CI job provisions belongs to the workspace you actually want to ship to. See [docs/workspaces.md](workspaces.md) for the full story.
+> **Workspace scoping note:** every agent / environment / session / vault you create lives in the [Anthropic Workspace](workspaces.md) of the credential that created it. There is no `workspace_id` parameter on `POST /v1/agents` — it is implicit in the credential. Make sure the WIF federation rule your CI job uses targets the workspace you actually want to ship to. See [docs/workspaces.md](workspaces.md) for the full story.
 
 ## Concept ↔ repo artifact
 
@@ -26,7 +26,7 @@ All API calls use the beta header **`anthropic-beta: managed-agents-2026-04-01`*
 3. **Agent:**
    - If `platform.<DEPLOY_ENV>.managed_agent_id` is unset, `POST /v1/agents` with `name`, `model`, `system` (inline from `agent.system` or loaded from `agent.system_path`), `tools`, `mcp_servers`, `skills`, plus `metadata` enriched with three keys prefixed by `PIPELINE_METADATA_PREFIX` (default `pipeline.`): `…deploy_env`, `…git_sha`, `…repo_id`. Override the prefix per-org without code changes.
    - Otherwise, `GET /v1/agents/{id}` to read the live `version`, then `POST /v1/agents/{id}` with that version + the desired fields. The API auto-bumps the version, or returns the same version unchanged when nothing diffs (the docs call this "no-op detection").
-4. Writes the new `id` and `version` back to `platform.<DEPLOY_ENV>.managed_agent_id` / `platform.<DEPLOY_ENV>.managed_agent_version`. The staging job commits this back to the branch automatically. Each deploy environment (staging, production, …) has its own block because each uses a different Anthropic Workspace and resources don't cross workspace boundaries — see [docs/workspaces.md](workspaces.md). YAML comments are preserved across writes (the loader uses Document-aware editing, not full re-serialization).
+4. Writes the new `id` and `version` to the runner's working copy of `platform.<DEPLOY_ENV>.managed_agent_id` / `platform.<DEPLOY_ENV>.managed_agent_version` and prints the diff in the deploy job's step summary. The workflow does **not** commit this back to the branch — copy the IDs into `agents/<id>/agent.yaml` manually in a follow-up PR so subsequent deploys update the existing resources in place. Each deploy environment (staging, production, …) has its own block because each uses a different Anthropic Workspace and resources don't cross workspace boundaries — see [docs/workspaces.md](workspaces.md). YAML comments are preserved across writes (the loader uses Document-aware editing, not full re-serialization).
 
 ## Sessions — used at eval time, not deploy time
 
@@ -60,15 +60,13 @@ Trigger via `workflow_dispatch` on `deploy.yaml` with `rollback_to_version: <N>`
 
 This is the single most confusing point in the system, so it's called out explicitly:
 
-|                          | Anthropic **Vaults**                                                                                | Infra secret vaults                                                                                        |
-| ------------------------ | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| **What's stored**        | OAuth credentials for MCP servers, scoped per end-user                                              | `ANTHROPIC_API_KEY`, `OP_SERVICE_ACCOUNT_TOKEN`, deploy creds                                              |
-| **Who manages it**       | Anthropic (token refresh, expiry, etc.)                                                             | You (AWS Secrets Manager / HashiCorp Vault / Azure KV / 1Password / GitHub Secrets)                        |
-| **API**                  | `POST /v1/vaults`, `POST /v1/vaults/{id}/credentials`, referenced via `vault_ids` on session create | None — fetched at job start by `.github/actions/claude-managed-agents-pipeline` (input: `secret-provider`) |
-| **When you create one**  | Once per end-user, when they OAuth-connect a third-party MCP                                        | Once per environment, during repo setup                                                                    |
-| **Pipeline touches it?** | Documented in `docs/vaults.md`; pipeline can pass `vault_ids` to sessions if needed                 | Yes — the composite action provisions `ANTHROPIC_API_KEY` at job start                                     |
-
-We named the composite-action input `secret-provider` (not `vault-provider`) specifically to keep these distinct.
+|                          | Anthropic **Vaults**                                                                                | Pipeline credentials                                                                                                  |
+| ------------------------ | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **What's stored**        | OAuth credentials for MCP servers, scoped per end-user                                              | The short-lived `ANTHROPIC_AUTH_TOKEN` that lets CI call the Anthropic API                                            |
+| **Who manages it**       | Anthropic (token refresh, expiry, etc.)                                                             | GitHub OIDC + Anthropic Workload Identity Federation (no static key in the repo)                                      |
+| **API**                  | `POST /v1/vaults`, `POST /v1/vaults/{id}/credentials`, referenced via `vault_ids` on session create | `POST /v1/oauth/token` (jwt-bearer exchange), invoked at job start by `.github/actions/claude-managed-agents-pipeline` |
+| **When it's minted**     | Once per end-user, when they OAuth-connect a third-party MCP                                        | Every CI job that calls Claude — tokens expire within minutes                                                         |
+| **Pipeline touches it?** | Documented in `docs/vaults.md`; pipeline can pass `vault_ids` to sessions if needed                 | Yes — the composite action exchanges the GitHub OIDC token for `ANTHROPIC_AUTH_TOKEN` at job start                    |
 
 ## Tool shapes
 

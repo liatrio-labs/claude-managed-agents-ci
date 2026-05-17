@@ -8,7 +8,7 @@ Production-grade GitHub Actions pipeline for repositories that ship [Claude Mana
 
 - Single-file YAML source of truth — [`agent.yaml`](agents/example-agent/agent.yaml) is `model`, `tools`, `mcp_servers`, `skills`, `system` (inline or `system_path`), `environment` (cloud sandbox: packages + networking), and CI knobs in one place
 - [JSON Schema](schema/agent.schema.json) validation — typo + shape errors caught locally before any CI run
-- Per-deploy-environment platform IDs (`platform.staging.*`, `platform.production.*`) auto-tracked and committed back
+- Per-deploy-environment platform IDs (`platform.staging.*`, `platform.production.*`) printed in the deploy job's step summary after each run; copy back into `agent.yaml` manually
 
 **PR review (every change)**
 
@@ -40,11 +40,8 @@ Production-grade GitHub Actions pipeline for repositories that ship [Claude Mana
 
 **Operations**
 
-- **Anthropic Workload Identity Federation** — keyless authentication via GitHub OIDC. The workflow's identity token is exchanged at `POST /v1/oauth/token` for a short-lived `sk-ant-oat01-…` access token bound to an Anthropic service account; no static `ANTHROPIC_API_KEY` ever sits in the repo. Default-off, opt in by setting `vars.SECRET_PROVIDER=anthropic-wif`. ([credentials.md](docs/credentials.md))
-- **Multi-provider secret loading (when not federating)** — GitHub Secrets (default fallback), AWS Secrets Manager, HashiCorp Vault, Azure Key Vault, 1Password, LastPass
-- **OIDC-first** where supported (AWS / Azure / Vault) — no long-lived cloud creds in CI
-- **Per-secret allow-list** — each workflow passes only the keys it needs (`{"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}`), not `toJSON(secrets)`, so unrelated repo secrets aren't broadcast as env vars on every job
-- **Per-Anthropic-Workspace key scoping** — each GitHub Environment binds to a different Workspace, so staging and production deploys never cross ([workspaces.md](docs/workspaces.md))
+- **Anthropic Workload Identity Federation** — the only credential path. The workflow's GitHub OIDC token is exchanged at `POST /v1/oauth/token` for a short-lived `sk-ant-oat01-…` access token bound to an Anthropic service account; no static `ANTHROPIC_API_KEY` ever sits in the repo. ([credentials.md](docs/credentials.md))
+- **Per-Anthropic-Workspace token scoping** — each GitHub Environment binds to a different Workspace via env-scoped `vars.ANTHROPIC_FEDERATION_RULE_ID` + `vars.ANTHROPIC_WORKSPACE_ID`, so staging and production deploys never cross ([workspaces.md](docs/workspaces.md))
 - **Anthropic Vault** support for per-end-user MCP OAuth credentials at session create time ([vaults.md](docs/vaults.md))
 - **Cleanup workflow** — `Cleanup orphans` (`workflow_dispatch`, dry-run by default) lists and optionally archives Managed Agents / Environments in a Workspace that don't match `agent.yaml`'s `platform.<env>.*` IDs. Same logic available locally as `pnpm agents:cleanup`.
 - All workflows run on `ubuntu-latest`; the action relies on Node + corepack already preinstalled (no extra setup steps)
@@ -66,23 +63,20 @@ This repo is a **reference implementation** — two working agents under [`agent
 | [`cost-budget.yaml`](.github/workflows/cost-budget.yaml)     | PR touching prompts/agents | runs cost probes, tracks token + USD spend, fails on >20% cost or >15% input-token regression vs main                                                                                                                       |
 | [`deploy.yaml`](.github/workflows/deploy.yaml)               | merge → main, manual prod  | syncs each agent to `POST /v1/agents` (versioned) + `POST /v1/environments`; smoke evals run as **real sessions** against the just-shipped version; auto-rollback on prod failure                                           |
 
-All workflows share one internal composite action — [`.github/actions/claude-managed-agents-pipeline/action.yaml`](.github/actions/claude-managed-agents-pipeline/action.yaml) — that provisions `ANTHROPIC_API_KEY` from your chosen secret provider. Defaults to **GitHub Secrets**; also supports Anthropic Workload Identity Federation (`anthropic-wif`), AWS Secrets Manager, HashiCorp Vault, Azure Key Vault, 1Password, and LastPass. OIDC-first where the provider supports it. The action is consumed locally via a relative path (`./.github/actions/...`) and is not published as a standalone Marketplace action — fork or copy this repo to use it.
+All workflows share one internal composite action — [`.github/actions/claude-managed-agents-pipeline/action.yaml`](.github/actions/claude-managed-agents-pipeline/action.yaml) — that installs pnpm dependencies and, for jobs that call Anthropic, exchanges the workflow's GitHub OIDC token for a short-lived `ANTHROPIC_AUTH_TOKEN` via Workload Identity Federation. Jobs that don't call Claude (lint, typecheck, build, tests) pass `provision-anthropic-credentials: 'false'` and skip the token exchange. The action is consumed locally via a relative path and is not published as a standalone Marketplace action — fork or copy this repo to use it.
 
 ## Workspaces — where your agents live
 
 Before you ship anything, understand how Anthropic scopes resources. Every resource this pipeline creates (Managed Agents, Environments, Sessions, Vaults) lives in an Anthropic **Workspace**, and every credential is bound to a specific workspace.
 
-- **Static API key path** — each `ANTHROPIC_API_KEY` belongs to exactly one workspace; the workspace is implicit in the key.
-- **WIF path** — the workspace is explicit: each federation rule targets one workspace, and `ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`) must be set per GitHub Environment so the pipeline sends the right `workspace_id` when exchanging the OIDC token.
-
-In either case:
+Each federation rule targets one workspace, and `vars.ANTHROPIC_FEDERATION_RULE_ID` + `vars.ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`) are scoped per GitHub Environment so the pipeline mints the right workspace-scoped token at job start:
 
 ```
-GitHub Environment "staging"    → credential (API key or WIF token) → Staging Workspace
-                                → deploy.ts creates agent in:         Staging Workspace
+GitHub Environment "staging"    → staging federation rule  → Staging Workspace token
+                                → deploy.ts creates agent in: Staging Workspace
 
-GitHub Environment "production" → credential (API key or WIF token) → Production Workspace
-                                → deploy.ts creates agent in:         Production Workspace
+GitHub Environment "production" → production federation rule → Production Workspace token
+                                → deploy.ts creates agent in:  Production Workspace
 ```
 
 If you mix credentials across environments you'll deploy to the wrong workspace and not notice until session-mode evals start failing with 404s on the agent ID.
@@ -113,12 +107,12 @@ Service identities used by CI typically need `workspace_developer`. CI does **no
 
 ### Two kinds of API keys
 
-|                        | Regular API key (what CI uses)                                                   | Admin API key                                               |
-| ---------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Header                 | `x-api-key: sk-ant-…`                                                            | `X-Api-Key: $ANTHROPIC_ADMIN_API_KEY`                       |
-| For                    | Messages API, Managed Agents API                                                 | `/v1/organizations/*` (workspace + member + key management) |
-| Scope                  | One workspace                                                                    | Org-wide                                                    |
-| Used by this pipeline? | **Yes** — provisioned by `claude-managed-agents-pipeline` as `ANTHROPIC_API_KEY` | No                                                          |
+|                        | WIF access token (what CI uses)                                                                                                    | Admin API key                                               |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Header                 | `Authorization: Bearer sk-ant-oat01-…`                                                                                             | `X-Api-Key: $ANTHROPIC_ADMIN_API_KEY`                       |
+| For                    | Messages API, Managed Agents API                                                                                                   | `/v1/organizations/*` (workspace + member + key management) |
+| Scope                  | One workspace; expires within minutes                                                                                              | Org-wide                                                    |
+| Used by this pipeline? | **Yes** — minted at job start via Workload Identity Federation by `claude-managed-agents-pipeline`, exported as `ANTHROPIC_AUTH_TOKEN` | No                                                          |
 
 This pipeline never asks for an admin key. Workspace and member provisioning is org-level state — handle it in the Anthropic Console at [platform.claude.com](https://platform.claude.com/) or in Terraform/OpenTofu, not as a CI side effect.
 
@@ -136,14 +130,12 @@ If you have regional data-handling requirements (EU GDPR, government, etc.), pin
 
 1. In the Anthropic Console at [platform.claude.com](https://platform.claude.com/) → **Settings** → **Workspaces**, create one workspace per environment you want to ship to (typical: dev, staging, production).
 
-2. **Recommended path — Workload Identity Federation** (no static keys):
+2. **Workload Identity Federation** (the only credential path):
    - Settings → Service accounts → Create one service account for CI (e.g. `<your-org>-ci-workflows`). Add it to each workspace's Members tab.
    - Settings → Workload identity → Issuers → Create with `https://token.actions.githubusercontent.com` and JWKS source `discovery`.
    - Settings → Workload identity → Federation rules → Create one rule per workspace, matching `subject_prefix: repo:OWNER/REPO:` (tighter for production: `…:environment:production`) targeted at the SA.
-   - In the GitHub repo: set `vars.SECRET_PROVIDER=anthropic-wif`, `vars.ANTHROPIC_ORGANIZATION_ID`, `vars.ANTHROPIC_SERVICE_ACCOUNT_ID`, and per-environment `vars.ANTHROPIC_FEDERATION_RULE_ID` and `vars.ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`).
-   - Full walkthrough: [docs/credentials.md](docs/credentials.md#0-anthropic-workload-identity-federation-recommended).
-
-   **Alternative path — static API keys**: For each workspace, mint an API key (Settings → API Keys with the workspace selected) and store it under per-environment names in your [secret provider](docs/credentials.md). The pipeline auto-falls-back to this path if `SECRET_PROVIDER` is unset or `=github`.
+   - In the GitHub repo: set repo-level `vars.ANTHROPIC_ORGANIZATION_ID` and `vars.ANTHROPIC_SERVICE_ACCOUNT_ID`, then per-environment `vars.ANTHROPIC_FEDERATION_RULE_ID` and `vars.ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`).
+   - Full walkthrough: [docs/credentials.md](docs/credentials.md).
 
 3. Confirm by running `pnpm agents:deploy` against staging and watching the console: the new agent should appear in the staging workspace, not production or default.
 
@@ -230,7 +222,7 @@ Reviewers should read this comment before approving. It's the closest thing to a
 .github/
   workflows/                    # ci, agent-diff, prompt-review, agent-eval, security,
                                 # cost-budget, deploy, release
-  actions/claude-managed-agents-pipeline/         # composite: Node + pnpm + secret provider
+  actions/claude-managed-agents-pipeline/         # composite: Node + pnpm + Anthropic WIF token exchange
 agents/
   example-agent/                # → see "What is an agent" above
 schema/
@@ -251,7 +243,7 @@ scripts/
 docs/
   managed-agents.md             # how this pipeline maps to the Anthropic API
   vaults.md                     # Anthropic per-user MCP OAuth vaults
-  credentials.md                # infra secret providers (where ANTHROPIC_API_KEY lives)
+  credentials.md                # Anthropic Workload Identity Federation setup
 ```
 
 ## Adding an agent
@@ -306,7 +298,7 @@ Set these as repo variables:
 This pipeline uses both, and they are unrelated:
 
 - **Anthropic Vaults** — per-end-user OAuth credentials for MCP servers, managed by Anthropic. Token refresh handled for you. Reference at session creation via `vault_ids`. See [docs/vaults.md](docs/vaults.md).
-- **Infra secret providers** — where the pipeline gets its own `ANTHROPIC_API_KEY` so it can call the API in the first place. AWS Secrets Manager, HashiCorp Vault, Azure Key Vault, 1Password, or GitHub Secrets. Configured via the `secret-provider` input on `claude-managed-agents-pipeline`. See [docs/credentials.md](docs/credentials.md).
+- **Workload Identity Federation** — how the pipeline gets its own short-lived Anthropic access token so it can call the API in the first place. The GitHub OIDC token is exchanged at `POST /v1/oauth/token`; no static `ANTHROPIC_API_KEY` is required. See [docs/credentials.md](docs/credentials.md).
 
 ## Local development
 
@@ -330,21 +322,21 @@ ANTHROPIC_API_KEY=... DEPLOY_ENV=staging pnpm agents:cleanup --apply            
 
 `scripts/deploy.ts` is idempotent and version-aware:
 
-- First run for an agent → `POST /v1/agents` + `POST /v1/environments`, write IDs back to `agent.yaml`.
-- Subsequent runs → `GET /v1/agents/{id}` for current version, `POST /v1/agents/{id}` with that version + the desired fields. The API auto-bumps the version, or returns the same version unchanged on a no-op.
+- First run for an agent → `POST /v1/agents` + `POST /v1/environments`. The IDs are written to the runner's working copy of `agent.yaml` and printed in the deploy job's **step summary**. Copy them into `agents/<id>/agent.yaml` under `platform.<env>.*` in a follow-up PR.
+- Subsequent runs (after the IDs are populated) → `GET /v1/agents/{id}` for current version, `POST /v1/agents/{id}` with that version + the desired fields. The API auto-bumps the version, or returns the same version unchanged on a no-op.
 - `ROLLBACK_TO_VERSION=<N>` (or `previous`) → fetches version N's snapshot and re-applies it as a new update; produces a fresh version that mirrors N. Versions are append-only.
 
 Triggered by:
 
-- Push to `main` → staging sync + session-mode smoke evals + commit IDs back. Staging smoke evals are `continue-on-error` since the resources are already created in the workspace by the time evals run; production keeps the gate and auto-rolls-back on smoke-eval failure.
+- Push to `main` → staging sync + session-mode smoke evals + print IDs in the step summary. Staging smoke evals are `continue-on-error` since the resources are already created in the workspace by the time evals run; production keeps the gate and auto-rolls-back on smoke-eval failure.
 - `workflow_dispatch` with `environment: production` → prod sync + post-deploy session-mode verification (gated by required-reviewer policy on the `production` GitHub Environment).
 - `workflow_dispatch` with `rollback_to_version: <N>` (or `previous`) → version rollback only, no environment changes.
 
-Failure-handling: the `Commit platform IDs back` step runs `if: success() || failure()` so partial state from a mid-deploy crash is always pushed to `main`. Without that, the next deploy reads NULL IDs and creates fresh resources, orphaning the previous ones.
+> **Manual ID hand-off.** Platform IDs are **not committed back to `main`** by the deploy workflow. Doing that would require a fine-grained PAT to push past branch protection, which we deliberately avoid in this public reference repo. The trade-off: if you forget to copy the IDs into `agent.yaml` after the first deploy, the next deploy reads NULL IDs and creates a second set of resources. The cleanup workflow below can prune the orphans.
 
 ### Cleaning up orphaned workspace resources
 
-If a deploy ever ends up creating duplicates anyway (e.g., before this fix existed, or after a manual intervention that bypassed the auto-commit-back):
+If a deploy ever ends up creating duplicates (e.g., because the first-deploy IDs weren't manually copied back before the next deploy ran):
 
 - **From CI**: trigger the `Cleanup orphans` workflow via `workflow_dispatch`. Choose the environment (staging or production), leave `apply` as `false` for a dry-run, then re-run with `apply=true`. Reads each `agents/<id>/agent.yaml`'s `platform.<env>.*` IDs as the source of truth, lists everything carrying this pipeline's `pipeline.repo_id` metadata, and archives whatever the workspace has but `agent.yaml` doesn't reference.
 - **Locally**: `ANTHROPIC_API_KEY=… DEPLOY_ENV=staging pnpm agents:cleanup` (dry-run) then `--apply`. Anthropic's API has no delete; archive is the canonical retire — archived resources stop showing up in `list`, but old IDs stay queryable.
@@ -352,8 +344,6 @@ If a deploy ever ends up creating duplicates anyway (e.g., before this fix exist
 ## Required GitHub setup
 
 1. Add **Environments** named `staging` and `production`. On `production`, require reviewers and protect from non-`main` refs.
-2. Configure your Anthropic credential provider:
-   - **Recommended (Workload Identity Federation):** create the federation issuer + service account + per-workspace federation rules in the Anthropic Console, then set `vars.SECRET_PROVIDER=anthropic-wif`, `vars.ANTHROPIC_ORGANIZATION_ID`, `vars.ANTHROPIC_SERVICE_ACCOUNT_ID`, and per-environment `vars.ANTHROPIC_FEDERATION_RULE_ID`. No `ANTHROPIC_API_KEY` secret needed.
-   - **Alternative (static API key):** leave `SECRET_PROVIDER` unset (or `=github`) and store `ANTHROPIC_API_KEY` per-environment as a GitHub secret, or wire one of the AWS / Vault / Azure / 1Password / LastPass paths. See [docs/credentials.md](docs/credentials.md).
+2. Configure Anthropic Workload Identity Federation: create the federation issuer + service account + per-workspace federation rules in the Anthropic Console, then set repo-level `vars.ANTHROPIC_ORGANIZATION_ID` and `vars.ANTHROPIC_SERVICE_ACCOUNT_ID`, and per-environment `vars.ANTHROPIC_FEDERATION_RULE_ID` and `vars.ANTHROPIC_WORKSPACE_ID`. No static `ANTHROPIC_API_KEY` is needed. Full walkthrough in [docs/credentials.md](docs/credentials.md).
 3. Mark these jobs as required status checks on `main`: `CI success`, `Security summary`, `Analyze (actions)` (CodeQL). The path-conditional jobs (`Agent Diff / diff`, `System Prompt Review / review`, `Cost Budget / budget`, `Agent Evals / Comment results`) are real signals on PRs that touch `agents/**` but should not be required — making them required would block PRs that don't touch agents (since the workflow won't run, no check appears).
-4. Provision a fine-grained PAT for the deploy auto-commit-back step. Repository: this repo only. Permission: **Contents: read and write** (nothing else). Store as repo-level secret `PIPELINE_PUSH_TOKEN`. The deploy workflow uses it to push the `chore(deploy): record managed agent IDs` commit back to `main` — required because branch protection blocks the default `GITHUB_TOKEN` even when the user is an admin.
+4. After the **first** deploy of each agent, copy the platform IDs from the deploy job's step summary into `agents/<id>/agent.yaml` under `platform.<env>.*` and merge that as a PR. Subsequent deploys read those IDs and update the existing managed agent / environment in place.

@@ -1,116 +1,45 @@
 name: 'Claude Managed Agents Pipeline'
 description: >
-  CI bootstrap action for the Claude Managed Agents Pipeline. Installs the
-  pipeline's pnpm dependencies and provisions Anthropic credentials from
-  your chosen provider. Strongest path is `anthropic-wif` (Workload
-  Identity Federation) — the workflow's GitHub OIDC token is exchanged
-  for a short-lived Anthropic access token bound to a service account; no
-  long-lived API key in the repo. Also supports GitHub Secrets, AWS
-  Secrets Manager, HashiCorp Vault, Azure Key Vault, 1Password Service
-  Accounts, and LastPass. The provisioned credential determines which
-  Anthropic Workspace the agents land in — see the workspaces docs.
-  Relies on Node + corepack preinstalled on the runner (ubuntu-latest has
-  both); the pnpm version is pinned via `packageManager` in package.json.
-branding:
-  icon: 'shield'
-  color: 'orange'
+  CI bootstrap for the Claude Managed Agents Pipeline. Installs pnpm
+  dependencies and (when needed) exchanges the workflow's GitHub OIDC
+  token for a short-lived Anthropic access token via Workload Identity
+  Federation. No long-lived API key in the repo. Pass
+  `provision-anthropic-credentials: false` for jobs that don't call
+  Claude (lint, typecheck, build, tests). Relies on Node + corepack
+  preinstalled on ubuntu-latest; the pnpm version is pinned via
+  `packageManager` in package.json.
 
 inputs:
-  secret-provider:
-    description: 'Credential source: anthropic-wif | github | aws | vault | azure | 1password | lastpass'
-    required: false
-    default: 'github'
-  require-anthropic-key:
-    description: 'Fail the job if Anthropic credentials are not provisioned (ANTHROPIC_API_KEY for static or ANTHROPIC_AUTH_TOKEN for WIF). Set to "false" for jobs that do not call Claude (lint, typecheck, build).'
+  provision-anthropic-credentials:
+    description: >-
+      Exchange the GitHub OIDC token for an Anthropic access token. Set to
+      'false' for jobs that don't call Claude (lint, typecheck, build,
+      tests). When 'true' (default), requires the four ANTHROPIC_*
+      federation IDs to be passed in.
     required: false
     default: 'true'
-  # Anthropic Workload Identity Federation (preferred — no static key)
   anthropic-organization-id:
-    description: 'Anthropic organization UUID (secret-provider=anthropic-wif). Settings → Organization in the Console.'
+    description: 'Anthropic organization UUID. Settings → Organization in the Console.'
     required: false
   anthropic-service-account-id:
-    description: 'Anthropic service account ID `svac_…` (secret-provider=anthropic-wif).'
+    description: 'Anthropic service account ID `svac_…`.'
     required: false
   anthropic-federation-rule-id:
-    description: 'Anthropic federation rule ID `fdrl_…` (secret-provider=anthropic-wif). Typically scoped per Workspace; pass via env-scoped vars.'
+    description: 'Anthropic federation rule ID `fdrl_…`. Typically scoped per Workspace; pass via env-scoped vars.'
     required: false
   anthropic-workspace-id:
-    description: 'Anthropic workspace ID `wrkspc_…` (secret-provider=anthropic-wif). Required when the federation rule is scoped to a specific workspace (non-default). Pass via env-scoped vars.'
+    description: 'Anthropic workspace ID `wrkspc_…`. Required when the federation rule is scoped to a specific workspace (non-default). Pass via env-scoped vars.'
     required: false
   anthropic-oidc-audience:
     description: "Audience claim to request from GitHub OIDC. Must match the federation rule's `audience`."
     required: false
     default: 'https://api.anthropic.com'
-  # AWS Secrets Manager via OIDC
-  aws-role-arn:
-    description: 'IAM role ARN to assume via OIDC (secret-provider=aws)'
-    required: false
-  aws-region:
-    description: 'AWS region (secret-provider=aws)'
-    required: false
-    default: 'us-east-1'
-  aws-secret-id:
-    description: 'Secrets Manager secret ID containing JSON of env vars'
-    required: false
-  # HashiCorp Vault via OIDC (JWT auth)
-  vault-url:
-    description: 'Vault server URL (secret-provider=vault)'
-    required: false
-  vault-role:
-    description: 'Vault JWT role to authenticate as'
-    required: false
-  vault-secret-paths:
-    description: 'Newline-separated list of "ENV_NAME=secret/path:field" mappings'
-    required: false
-  # Azure Key Vault via OIDC
-  azure-client-id:
-    description: 'Azure AD app client ID (secret-provider=azure)'
-    required: false
-  azure-tenant-id:
-    description: 'Azure AD tenant ID'
-    required: false
-  azure-subscription-id:
-    description: 'Azure subscription ID'
-    required: false
-  azure-keyvault-name:
-    description: 'Azure Key Vault name'
-    required: false
-  azure-secret-names:
-    description: 'Newline-separated list of "ENV_NAME=kv-secret-name" mappings'
-    required: false
-  # 1Password Service Account
-  op-service-account-token:
-    description: '1Password service account token (passed in from secrets)'
-    required: false
-  op-secret-refs:
-    description: 'Newline-separated list of "ENV_NAME=op://vault/item/field" refs'
-    required: false
-  # LastPass (static credentials — no OIDC support upstream)
-  lp-username:
-    description: 'LastPass account email (secret-provider=lastpass)'
-    required: false
-  lp-password:
-    description: 'LastPass master password (secret-provider=lastpass). NOT recommended without IP allowlisting; static creds.'
-    required: false
-  lp-secret-refs:
-    description: 'Newline-separated list of "ENV_NAME=Folder/Item" mappings (lastpass `lpass show --password`)'
-    required: false
-  # GitHub Secrets fallback (default)
-  github-secrets-json:
-    description: >-
-      JSON object of env vars to export, typically a per-key allow-list with
-      just the keys this workflow needs (e.g. {"ANTHROPIC_API_KEY":"<value
-      from caller secrets>"}). Avoid passing toJSON(secrets) — that broadcasts
-      every repo secret as an env var on every job. Used when
-      secret-provider=github (the default).
-    required: false
 
 runs:
   using: 'composite'
   steps:
     # The action lives at <repo>/.github/actions/claude-managed-agents-pipeline.
-    # Three levels up from `${{ github.action_path }}` gets us the repo root —
-    # works both for local refs and cross-repo `OWNER/REPO/...@v1` refs.
+    # Three levels up from `${{ github.action_path }}` gets us the repo root.
     - name: Resolve pipeline repo root
       id: pipeline-root
       shell: bash
@@ -148,10 +77,10 @@ runs:
         pnpm install --frozen-lockfile
 
     # ─────────────────────────────────────────────────────────
-    # Anthropic Workload Identity Federation (preferred — no static key)
+    # Anthropic Workload Identity Federation
     # ─────────────────────────────────────────────────────────
     - name: Anthropic WIF — fetch GitHub OIDC + exchange for access token
-      if: inputs.secret-provider == 'anthropic-wif'
+      if: inputs.provision-anthropic-credentials == 'true'
       shell: bash
       env:
         AUDIENCE: ${{ inputs.anthropic-oidc-audience }}
@@ -162,7 +91,7 @@ runs:
       run: |
         set -euo pipefail
         if [ -z "${FEDERATION_RULE_ID:-}" ] || [ -z "${ORGANIZATION_ID:-}" ] || [ -z "${SERVICE_ACCOUNT_ID:-}" ]; then
-          echo "::error::secret-provider=anthropic-wif requires anthropic-federation-rule-id, anthropic-organization-id, and anthropic-service-account-id."
+          echo "::error::WIF requires anthropic-federation-rule-id, anthropic-organization-id, and anthropic-service-account-id."
           exit 1
         fi
         if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
@@ -237,173 +166,3 @@ runs:
         echo "ANTHROPIC_AUTH_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
         echo "Acquired Anthropic access token (expires in ${EXPIRES}s, scoped to service account ${SERVICE_ACCOUNT_ID})."
         echo "::endgroup::"
-
-    # ─────────────────────────────────────────────────────────
-    # AWS Secrets Manager via OIDC
-    # ─────────────────────────────────────────────────────────
-    - name: Configure AWS credentials (OIDC)
-      if: inputs.secret-provider == 'aws'
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ inputs.aws-role-arn }}
-        aws-region: ${{ inputs.aws-region }}
-        role-session-name: gh-${{ github.run_id }}-${{ github.run_attempt }}
-
-    - name: Fetch secrets from AWS Secrets Manager
-      if: inputs.secret-provider == 'aws'
-      shell: bash
-      run: |
-        set -euo pipefail
-        echo "::group::Fetching secret ${{ inputs.aws-secret-id }}"
-        SECRET_JSON=$(aws secretsmanager get-secret-value \
-          --secret-id "${{ inputs.aws-secret-id }}" \
-          --query SecretString --output text)
-        echo "$SECRET_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' | while IFS= read -r line; do
-          name="${line%%=*}"
-          value="${line#*=}"
-          echo "::add-mask::$value"
-          echo "$name=$value" >> "$GITHUB_ENV"
-        done
-        echo "::endgroup::"
-
-    # ─────────────────────────────────────────────────────────
-    # HashiCorp Vault via OIDC (GitHub JWT auth)
-    # ─────────────────────────────────────────────────────────
-    - name: Fetch secrets from HashiCorp Vault
-      if: inputs.secret-provider == 'vault'
-      uses: hashicorp/vault-action@v3
-      with:
-        url: ${{ inputs.vault-url }}
-        method: jwt
-        role: ${{ inputs.vault-role }}
-        exportEnv: true
-        secrets: ${{ inputs.vault-secret-paths }}
-
-    # ─────────────────────────────────────────────────────────
-    # Azure Key Vault via OIDC
-    # ─────────────────────────────────────────────────────────
-    - name: Login to Azure (OIDC)
-      if: inputs.secret-provider == 'azure'
-      uses: azure/login@v2
-      with:
-        client-id: ${{ inputs.azure-client-id }}
-        tenant-id: ${{ inputs.azure-tenant-id }}
-        subscription-id: ${{ inputs.azure-subscription-id }}
-
-    - name: Fetch secrets from Azure Key Vault
-      if: inputs.secret-provider == 'azure'
-      shell: bash
-      run: |
-        set -euo pipefail
-        while IFS= read -r mapping; do
-          [ -z "$mapping" ] && continue
-          name="${mapping%%=*}"
-          kv_name="${mapping#*=}"
-          value=$(az keyvault secret show \
-            --vault-name "${{ inputs.azure-keyvault-name }}" \
-            --name "$kv_name" --query value -o tsv)
-          echo "::add-mask::$value"
-          echo "$name=$value" >> "$GITHUB_ENV"
-        done <<< "${{ inputs.azure-secret-names }}"
-
-    # ─────────────────────────────────────────────────────────
-    # 1Password Service Account
-    # ─────────────────────────────────────────────────────────
-    - name: Stage 1Password references as env
-      if: inputs.secret-provider == '1password'
-      shell: bash
-      env:
-        OP_REFS: ${{ inputs.op-secret-refs }}
-      run: |
-        set -euo pipefail
-        while IFS= read -r mapping; do
-          [ -z "$mapping" ] && continue
-          name="${mapping%%=*}"
-          ref="${mapping#*=}"
-          echo "$name=$ref" >> "$GITHUB_ENV"
-        done <<< "$OP_REFS"
-
-    - name: Load secrets from 1Password
-      if: inputs.secret-provider == '1password'
-      uses: 1password/load-secrets-action@v2
-      with:
-        export-env: true
-      env:
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ inputs.op-service-account-token }}
-
-    # ─────────────────────────────────────────────────────────
-    # LastPass (CLI; static credentials — no OIDC upstream)
-    # ─────────────────────────────────────────────────────────
-    - name: Install lpass CLI
-      if: inputs.secret-provider == 'lastpass'
-      shell: bash
-      run: |
-        set -euo pipefail
-        if ! command -v lpass >/dev/null 2>&1; then
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends lastpass-cli
-        fi
-        lpass --version
-
-    - name: Fetch secrets from LastPass
-      if: inputs.secret-provider == 'lastpass'
-      shell: bash
-      env:
-        LPASS_DISABLE_PINENTRY: '1'
-        LP_USERNAME: ${{ inputs.lp-username }}
-        LP_PASSWORD: ${{ inputs.lp-password }}
-        LP_REFS: ${{ inputs.lp-secret-refs }}
-      run: |
-        set -euo pipefail
-        if [ -z "${LP_USERNAME:-}" ] || [ -z "${LP_PASSWORD:-}" ]; then
-          echo "::error::lp-username and lp-password are required when secret-provider=lastpass"
-          exit 1
-        fi
-        echo "::add-mask::$LP_PASSWORD"
-        # Non-interactive login: master password via stdin, no agent persistence.
-        printf '%s' "$LP_PASSWORD" | LPASS_DISABLE_PINENTRY=1 lpass login --trust "$LP_USERNAME"
-        trap 'lpass logout --force >/dev/null 2>&1 || true' EXIT
-        while IFS= read -r mapping; do
-          [ -z "$mapping" ] && continue
-          name="${mapping%%=*}"
-          ref="${mapping#*=}"
-          value=$(lpass show --password "$ref")
-          if [ -z "$value" ]; then
-            echo "::warning::lpass returned empty value for $ref (env $name)"
-          fi
-          echo "::add-mask::$value"
-          echo "$name=$value" >> "$GITHUB_ENV"
-        done <<< "$LP_REFS"
-
-    # ─────────────────────────────────────────────────────────
-    # GitHub Secrets fallback (default)
-    # ─────────────────────────────────────────────────────────
-    - name: Load secrets from GitHub
-      if: inputs.secret-provider == 'github' && inputs.github-secrets-json != ''
-      shell: bash
-      env:
-        GH_SECRETS: ${{ inputs.github-secrets-json }}
-      run: |
-        set -euo pipefail
-        echo "$GH_SECRETS" | jq -r 'to_entries[] | "\(.key)=\(.value)"' | while IFS= read -r line; do
-          name="${line%%=*}"
-          value="${line#*=}"
-          [ -z "$name" ] && continue
-          echo "::add-mask::$value"
-          echo "$name=$value" >> "$GITHUB_ENV"
-        done
-
-    - name: Verify required Claude credentials
-      if: inputs.require-anthropic-key == 'true'
-      shell: bash
-      run: |
-        if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
-          echo "Claude credentials provisioned via ${{ inputs.secret-provider }} (Bearer / WIF)."
-          exit 0
-        fi
-        if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-          echo "Claude credentials provisioned via ${{ inputs.secret-provider }} (x-api-key)."
-          exit 0
-        fi
-        echo "::error::No Anthropic credentials provisioned. Expected ANTHROPIC_AUTH_TOKEN (WIF) or ANTHROPIC_API_KEY (static)."
-        exit 1

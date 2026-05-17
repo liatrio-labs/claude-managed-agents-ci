@@ -3,7 +3,8 @@ name: Deploy
 # Syncs each agent in agents/ to the Managed Agents API:
 #
 #   - push to main → deploys to staging, runs session-mode smoke evals against
-#     the just-shipped version, commits returned platform IDs back to main.
+#     the just-shipped version, prints the returned platform IDs in the step
+#     summary so they can be copied back into agent.yaml manually.
 #   - workflow_dispatch with environment=production → promotes to production
 #     (gated by the GitHub "production" Environment), with auto-rollback on
 #     smoke-eval failure.
@@ -11,6 +12,12 @@ name: Deploy
 # Smoke evals exercise the live runtime via /v1/sessions, so they require the
 # agent to have already been synced. Set rollback_to_version to roll forward
 # from a previous version without touching the environment.
+#
+# Platform IDs are NOT committed back automatically — doing so would require
+# a fine-grained PAT to bypass branch protection. After the first deploy of
+# an agent to a workspace, copy the printed IDs into agents/<id>/agent.yaml
+# under platform.<env>.* and merge that as a normal PR. Subsequent deploys
+# read those IDs and update the existing resources in place.
 
 on:
   push:
@@ -31,9 +38,9 @@ on:
         required: false
 
 permissions:
-  contents: write # commit returned platform IDs back
+  contents: read
   deployments: write
-  id-token: write # Anthropic Workload Identity Federation (vars.SECRET_PROVIDER=anthropic-wif)
+  id-token: write # Anthropic Workload Identity Federation
 
 concurrency:
   group: deploy-${{ github.event.inputs.environment || 'staging' }}-${{ github.event.inputs.agent || 'all' }}
@@ -51,33 +58,16 @@ jobs:
       ROLLBACK_TO_VERSION: ${{ github.event.inputs.rollback_to_version || '' }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          # PIPELINE_PUSH_TOKEN is a fine-grained PAT scoped to Contents:
-          # read+write on this repo. We need it because the "Commit platform
-          # IDs back" step pushes directly to main, which has branch
-          # protection with required status checks. The default GITHUB_TOKEN
-          # is rejected by that rule; an admin-owned PAT bypasses (because
-          # branch protection has enforce_admins: false).
-          # Falls back to GITHUB_TOKEN if the secret isn't set so external
-          # consumers without a PAT still get a coherent failure mode.
-          token: ${{ secrets.PIPELINE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
 
-      # Anthropic credential provisioning. Set vars.SECRET_PROVIDER to
-      # `anthropic-wif` for keyless OIDC federation, or leave it unset to
-      # fall back to GitHub Secrets. See docs/credentials.md for AWS /
-      # Vault / Azure / 1Password / LastPass paths.
+      # Anthropic credential provisioning via Workload Identity Federation.
+      # vars.ANTHROPIC_* must be configured per GitHub Environment so each
+      # env targets the right Anthropic workspace.
       - uses: ./.github/actions/claude-managed-agents-pipeline
         with:
-          secret-provider: ${{ vars.SECRET_PROVIDER || 'github' }}
-          # WIF inputs (used when secret-provider=anthropic-wif). Both
-          # vars.ANTHROPIC_FEDERATION_RULE_ID and vars.ANTHROPIC_*_ID
-          # should be configured per environment in repo settings.
           anthropic-organization-id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic-service-account-id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           anthropic-federation-rule-id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           anthropic-workspace-id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          # GitHub Secrets fallback (used when secret-provider=github).
-          github-secrets-json: '{"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}'
 
       - name: Sync agent + environment
         run: pnpm agents:deploy
@@ -100,21 +90,29 @@ jobs:
           ROLLBACK_TO_VERSION: previous
         run: pnpm agents:deploy
 
-      - name: Commit platform IDs back
-        # Run on success AND on failure, so partial IDs from a mid-deploy
-        # crash get persisted to main. Without this, the NEXT deploy sees
-        # null IDs in agent.yaml and creates fresh resources, orphaning
-        # the agents/environments the previous run already created.
+      - name: Print platform IDs for manual update
+        # Runs on success AND on failure, so partial IDs from a mid-deploy
+        # crash are still visible. The deploy script writes IDs to the
+        # runner's working copy of agent.yaml; this step surfaces the diff
+        # in the job log and the step summary. Copy these into
+        # agents/<id>/agent.yaml under platform.<env>.* in a follow-up PR
+        # so subsequent deploys update the existing resources instead of
+        # creating duplicates.
         if: success() || failure()
         run: |
           set -euo pipefail
           if git diff --quiet -- 'agents/**/agent.yaml'; then
-            echo "No platform ID changes to commit."
+            echo "No platform ID changes — nothing to copy back."
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add 'agents/**/agent.yaml'
-          git commit -m "chore(deploy): record managed agent IDs (${DEPLOY_ENV}) [skip ci]"
-          git pull --rebase origin main
-          git push
+          echo "Platform ID changes from this deploy (copy into agent.yaml manually):"
+          git diff -- 'agents/**/agent.yaml'
+          {
+            echo "## Platform IDs to copy into \`agent.yaml\`"
+            echo ""
+            echo "The deploy script wrote these IDs to the runner's working copy of \`agent.yaml\`. They are **not** committed back to the repo automatically — copy them into \`agents/<id>/agent.yaml\` under \`platform.${DEPLOY_ENV}.*\` in a follow-up PR. Subsequent deploys will then update the existing managed agent / environment in place instead of creating new resources."
+            echo ""
+            echo '```diff'
+            git diff -- 'agents/**/agent.yaml'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

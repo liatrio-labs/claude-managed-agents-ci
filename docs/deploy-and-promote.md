@@ -21,9 +21,9 @@ flowchart LR
       GHE_P["Environment: production<br/>(required reviewers)"]
     end
 
-    subgraph sp["Secret provider<br/>(GitHub Secrets / AWS / Vault / Azure / 1Password / LastPass)"]
-      KEY_S["ANTHROPIC_API_KEY<br/>scoped to staging Workspace"]
-      KEY_P["ANTHROPIC_API_KEY<br/>scoped to prod Workspace"]
+    subgraph sp["Anthropic Workload Identity Federation"]
+      KEY_S["ANTHROPIC_AUTH_TOKEN<br/>(WIF rule scoped to staging Workspace)"]
+      KEY_P["ANTHROPIC_AUTH_TOKEN<br/>(WIF rule scoped to prod Workspace)"]
     end
 
     subgraph ant["Anthropic"]
@@ -42,12 +42,12 @@ flowchart LR
 **Setup checklist** (do once per project):
 
 1. **Anthropic Console** → create Workspaces: `my-project-staging`, `my-project-prod`. Set `data_residency` at create time — it's immutable.
-2. **Anthropic Console** → mint one API key per Workspace. Name it after the Workspace so the audit trail is obvious.
+2. **Anthropic Console** → create a service account (one for CI) and one Workload Identity Federation rule per Workspace. See [docs/credentials.md](credentials.md) for the rule shape.
 3. **GitHub repo settings → Environments** → create `staging` and `production`. On `production`, require reviewers and restrict to `main`.
-4. **Secret provider** → store each key under per-environment names (`AWS_SECRET_ID_STAGING`, `AWS_SECRET_ID_PROD`, etc.) and wire them via `vars.SECRET_PROVIDER` + matching `vars.*` on the repo. See [docs/credentials.md](credentials.md).
-5. **Sanity check** — `ANTHROPIC_API_KEY=… pnpm agents:deploy` locally to confirm the agent lands in the right Workspace before letting CI do it.
+4. **GitHub variables** → set repo-level `vars.ANTHROPIC_ORGANIZATION_ID` and `vars.ANTHROPIC_SERVICE_ACCOUNT_ID`, then per-environment `vars.ANTHROPIC_FEDERATION_RULE_ID` and `vars.ANTHROPIC_WORKSPACE_ID`.
+5. **Sanity check** — run the staging deploy and confirm the agent lands in the right Workspace before promoting to production.
 
-> Steps 1 and 2 are the only Console-side admin work. Everything below — creating Managed Agents, creating Managed Agents Environments, running smoke-eval Sessions — uses the workspace-scoped key from step 2. The pipeline never needs an admin key.
+> Steps 1 and 2 are the only Console-side admin work. Everything below — creating Managed Agents, creating Managed Agents Environments, running smoke-eval Sessions — uses the workspace-scoped WIF token minted at job start. The pipeline never needs an admin key.
 
 ## Path 1 — Auto-deploy to staging on merge to `main`
 
@@ -200,8 +200,8 @@ platform:
 
 | Symptom                                                                           | Likely cause                                                                                                                                                                                                                               |
 | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Deploy succeeds but session-mode evals 404 on `agt_…`                             | The API key in CI doesn't belong to the Workspace where that agent was created. Re-check the per-environment key wiring in your secret provider.                                                                                           |
-| `platform.<env>.managed_agent_id` keeps churning to a different ID across deploys | Something is clearing the YAML between runs (e.g. a `.gitignore` rule on `agent.yaml`, or `commit-platform-ids` is failing silently). Check the deploy logs.                                                                               |
+| Deploy succeeds but session-mode evals 404 on `agt_…`                             | The WIF token CI minted is scoped to a different Workspace than the one the agent lives in. Re-check `vars.ANTHROPIC_FEDERATION_RULE_ID` and `vars.ANTHROPIC_WORKSPACE_ID` on that GitHub Environment.                                      |
+| `platform.<env>.managed_agent_id` keeps churning to a different ID across deploys | The IDs from the first deploy were never copied into `agent.yaml`, so each run creates fresh resources. Check the deploy job's step summary for the IDs, paste them into `platform.<env>.*`, merge, then run `Cleanup orphans` to archive the duplicates.                                                                                                  |
 | Production deploy auto-rolled back without my asking                              | Smoke evals (`MIN_PASS_RATE=0.95`) failed. The previous version is now live; check `.eval-results/` artifacts for the failing cases.                                                                                                       |
 | Need to change the Managed Agents Environment (packages, networking)              | Bump `environment.name` in `agent.yaml` to a new unique value — Anthropic's environment objects aren't versioned, so a name change forces a fresh `POST /v1/environments` on the next deploy. The old one stays live until you archive it. |
-| First-ever deploy succeeded but commit-back failed                                | The `commit-platform-ids` step pushed via `GITHUB_TOKEN`; protected branches reject it. Either turn that step off and commit the IDs by hand, or use a PAT in `secrets.PIPELINE_PUSH_TOKEN` and tweak the workflow.                        |
+| Deploy succeeded but the next deploy creates duplicate resources                  | Platform IDs from the first deploy weren't copied into `agent.yaml` before the next deploy ran. Find the IDs in the original deploy job's step summary, paste them into `platform.<env>.*` in a PR, then run `Cleanup orphans` to archive the duplicates.                                                                                                  |
