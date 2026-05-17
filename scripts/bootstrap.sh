@@ -46,11 +46,13 @@ DEFAULT_REPO="$(detect_repo)"
 # ─── prompts + validation ──────────────────────────────────────────────
 prompt() {
   local var="$1" msg="$2" default="${3:-}" value
+  # Read from /dev/tty so this works even when stdin is a pipe
+  # (e.g. when the script was launched via `curl … | bash`).
   if [[ -n "$default" ]]; then
-    read -r -p "$msg [$default]: " value
+    read -r -p "$msg [$default]: " value </dev/tty
     value="${value:-$default}"
   else
-    read -r -p "$msg: " value
+    read -r -p "$msg: " value </dev/tty
   fi
   # Strip leading/trailing whitespace AND any stray CR (Windows paste, etc.)
   value="${value#"${value%%[![:space:]]*}"}"
@@ -149,7 +151,7 @@ when creating federation rules in the next step. (If you've already
 created an issuer for this repo, reuse it.)
 
 EOF
-read -r -p "Press enter once the issuer is created (or already exists)..."
+read -r -p "Press enter once the issuer is created (or already exists)..." </dev/tty
 
 # ─── 4. Federation Rules ───────────────────────────────────────────────
 cat <<EOF
@@ -221,7 +223,7 @@ About to set the following in $GITHUB_REPO:
 
 EOF
 
-read -r -p "Apply these now via gh CLI? [y/N]: " confirm
+read -r -p "Apply these now via gh CLI? [y/N]: " confirm </dev/tty
 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
   echo
   echo "Skipped. Copy-pasteable commands:"
