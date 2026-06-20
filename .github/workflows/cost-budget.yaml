@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 20
     environment: staging
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/claude-managed-agents-pipeline
         with:

@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/claude-managed-agents-pipeline
         with:
           provision-anthropic-credentials: 'false'
@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/claude-managed-agents-pipeline
         with:
           provision-anthropic-credentials: 'false'
@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/claude-managed-agents-pipeline
         with:
           provision-anthropic-credentials: 'false'
@@ -55,7 +55,7 @@ jobs:
     timeout-minutes: 10
     needs: [lint, typecheck, unit]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/claude-managed-agents-pipeline
         with:
           provision-anthropic-credentials: 'false'
@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/claude-managed-agents-pipeline
         with:
           provision-anthropic-credentials: 'false'

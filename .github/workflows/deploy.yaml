@@ -57,7 +57,7 @@ jobs:
       AGENT: ${{ github.event.inputs.agent || '' }}
       ROLLBACK_TO_VERSION: ${{ github.event.inputs.rollback_to_version || '' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Anthropic credential provisioning via Workload Identity Federation.
       # vars.ANTHROPIC_* must be configured per GitHub Environment so each
